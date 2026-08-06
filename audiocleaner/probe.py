@@ -149,10 +149,12 @@ def _run_json(cmd: list[str]) -> dict:
         raise ExternalToolError(f"Tool not found: {cmd[0]}") from e
     except subprocess.TimeoutExpired as e:
         raise ExternalToolError(f"{cmd[0]} timed out") from e
-    if not proc.stdout.strip():
-        raise ExternalToolError(f"{cmd[0]} produced no output: {proc.stderr.strip()}")
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    if not stdout.strip():
+        raise ExternalToolError(f"{cmd[0]} produced no output: {stderr.strip()}")
     try:
-        return json.loads(proc.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as e:
         raise ExternalToolError(f"{cmd[0]} returned invalid JSON") from e
 

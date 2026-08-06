@@ -89,8 +89,10 @@ def process_file(path: Path, cache=None) -> ProcessResult:
     if proc.returncode == 2 or not temp_path.exists():
         # mkvmerge exit code 2 = error; 0 = success; 1 = warnings (still usable).
         _cleanup_temp(temp_path)
+        stderr_msg = (proc.stderr or "").strip()
+        stdout_msg = (proc.stdout or "").strip()
         return ProcessResult(path=str(path), status="error",
-                              message=f"mkvmerge failed: {proc.stderr.strip() or proc.stdout.strip()}")
+                              message=f"mkvmerge failed: {stderr_msg or stdout_msg or '(no output from mkvmerge)'}")
 
     # --- Verification ---
     ok, verify_msg = _verify_output(temp_path, result, best_track)
