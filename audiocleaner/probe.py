@@ -8,11 +8,16 @@ of an unchanged library are fast.
 """
 
 import json
+import os
 import subprocess
 import shutil
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
+
+# Suppress console window creation for subprocess calls in a windowed
+# (console=False) build -- otherwise Windows pops a new console per call.
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 class ExternalToolError(RuntimeError):
@@ -133,7 +138,12 @@ class ProbeCache:
 def _run_json(cmd: list[str]) -> dict:
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            creationflags=_NO_WINDOW,
         )
     except FileNotFoundError as e:
         raise ExternalToolError(f"Tool not found: {cmd[0]}") from e

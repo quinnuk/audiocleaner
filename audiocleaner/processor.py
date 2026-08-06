@@ -13,6 +13,10 @@ from typing import Optional
 from .probe import probe_file, FileProbeResult, ExternalToolError
 from .codec_rank import select_best_english_track
 
+# Suppress console window creation for subprocess calls in a windowed
+# (console=False) build -- otherwise Windows pops a new console per call.
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
 
 @dataclass
 class ProcessResult:
@@ -67,7 +71,13 @@ def process_file(path: Path, cache=None) -> ProcessResult:
     ]
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            creationflags=_NO_WINDOW,
+        )
     except FileNotFoundError:
         return ProcessResult(path=str(path), status="error",
                               message="mkvmerge not found on PATH.")

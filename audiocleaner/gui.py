@@ -9,6 +9,8 @@ Also supports:
   - Minimising to the system tray instead of quitting on close
   - A --minimized launch mode (used by the autostart entry) that skips
     showing the window and auto-resumes watching the saved folders
+  - Single-instance enforcement: launching a second copy brings the
+    existing window to front instead of starting a duplicate
 """
 
 import os
@@ -21,6 +23,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QIcon
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox,
@@ -32,6 +35,11 @@ from .config import APP_NAME, LOG_FILENAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_S
 from .worker import CleanerWorker, WatchWorker
 from .probe import check_tools_available, get_missing_tools
 from . import autostart
+
+# Name of the local IPC server used to detect an already-running instance
+# and ask it to show itself, instead of starting a second copy that could
+# end up watching/remuxing the same folder at the same time.
+_SINGLE_INSTANCE_SERVER_NAME = f"{APP_NAME}-SingleInstance"
 
 
 class MainWindow(QWidget):
@@ -59,6 +67,7 @@ class MainWindow(QWidget):
         self._run_folder_index = 0
         self._run_folder_count = 0
 
+        self._deps_ok = False
         self._build_ui()
         self._setup_tray()
         self._load_saved_folders()
@@ -256,6 +265,28 @@ class MainWindow(QWidget):
             self.autostart_check.setChecked(not checked)
             self.autostart_check.blockSignals(False)
 
+    # ---------------------------------------------------------- single instance
+    def _setup_single_instance_server(self):
+        """Listen for pings from any second copy that gets launched while
+        this one is already running, and bring our window to front instead."""
+        QLocalServer.removeServer(_SINGLE_INSTANCE_SERVER_NAME)  # clear stale handle from a crash
+        self._single_instance_server = QLocalServer(self)
+        self._single_instance_server.newConnection.connect(self._on_single_instance_ping)
+        self._single_instance_server.listen(_SINGLE_INSTANCE_SERVER_NAME)
+
+    def _on_single_instance_ping(self):
+        socket = self._single_instance_server.nextPendingConnection()
+        if socket:
+            socket.disconnectFromServer()
+        self._show_from_tray()
+        if self.tray_icon:
+            self.tray_icon.showMessage(
+                APP_NAME,
+                "AudioCleaner is already running — bringing it to the front.",
+                QSystemTrayIcon.Information,
+                3000,
+            )
+
     # ---------------------------------------------------------- system tray
     def _setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -292,6 +323,8 @@ class MainWindow(QWidget):
         self._stop_watching()
         if self.tray_icon:
             self.tray_icon.hide()
+        if getattr(self, "_single_instance_server", None):
+            self._single_instance_server.close()
         QApplication.instance().quit()
 
     def closeEvent(self, event):
@@ -588,7 +621,22 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)  # keep running when hidden to tray
 
+    # --- single instance check ---
+    # If another AudioCleaner is already running, ping it to show itself
+    # and exit immediately rather than starting a second copy (two copies
+    # watching/remuxing the same folder at once isn't safe).
+    probe_socket = QLocalSocket()
+    probe_socket.connectToServer(_SINGLE_INSTANCE_SERVER_NAME)
+    if probe_socket.waitForConnected(200):
+        probe_socket.write(b"show")
+        probe_socket.flush()
+        probe_socket.waitForBytesWritten(500)
+        probe_socket.disconnectFromServer()
+        return
+    probe_socket.abort()
+
     win = MainWindow()
+    win._setup_single_instance_server()
 
     if minimized:
         win._launch_minimized()
