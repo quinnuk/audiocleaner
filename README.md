@@ -5,11 +5,21 @@ files (recursively) and keeps only the single best English audio track per
 file — Dolby Atmos always wins when present — while never touching video,
 subtitles, chapters, fonts, attachments, or metadata.
 
+<p align="center">
+  <a href="https://buymeacoffee.com/quinnuk" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="60" width="217">
+  </a>
+  <br>
+  <sub>If AudioCleaner saves you disk space, a coffee is always appreciated ☕</sub>
+</p>
+
 ## Requirements
 
 - **Python 3.10+**
-- **[MKVToolNix](https://mkvtoolnix.download/)** — provides `mkvmerge`, used to inspect and remux files. Must be on your `PATH`.
-- **[MediaInfo](https://mediaarea.net/en/MediaInfo)** (CLI) — used alongside mkvmerge to reliably detect Atmos / DTS:X extensions. Must be on your `PATH`.
+- **[MKVToolNix](https://mkvtoolnix.download/)** — provides `mkvmerge`, used to inspect and remux files. Must be on your `PATH`, **or** its executable placed in the same folder as `AudioCleaner.exe`.
+- **[MediaInfo](https://mediaarea.net/en/MediaInfo)** (CLI edition) — used alongside mkvmerge to reliably detect Atmos / DTS:X extensions. Must be on your `PATH`, **or** its executable placed in the same folder as `AudioCleaner.exe`.
+
+If you're running the standalone `.exe`, keeping `MediaInfo.exe` (and its `Contrib`/`Plugin` folders if present) directly next to `AudioCleaner.exe` is the simplest option and avoids needing a system-wide install.
 
 Check both are installed and on PATH:
 ```
@@ -49,6 +59,33 @@ python main.py
 5. **Log** — every decision is appended to `audiocleaner_log.txt` in the
    root folder, viewable via the "Open Log" button.
 
+## Watch Mode, system tray & autostart
+
+Beyond a one-off scan, AudioCleaner can run continuously in the
+background and clean new files as they arrive — useful if it's paired
+with something like Radarr/Sonarr dropping files into your library.
+
+- **Start Watching All Folders** — instead of a single scan-and-stop
+  pass, this keeps a lightweight watcher running per folder that
+  detects new/changed `.mkv` files, waits for them to finish copying
+  (the "Wait for new files to finish copying" setting — default 120s,
+  matching typical Radarr/Sonarr move behaviour), then cleans them
+  automatically using the same select → process → verify → replace
+  pipeline as a manual run.
+- **System tray** — closing the window (the X button) doesn't quit the
+  app; it minimises to a tray icon instead, so watching continues in
+  the background. Right-click the tray icon for Show Window,
+  Start/Stop Watching, and Quit AudioCleaner. Quit is the only way to
+  fully exit while watching.
+- **Start with Windows** — tick the checkbox to have AudioCleaner
+  launch automatically at login, minimised straight to the tray, and
+  resume watching whatever folders you'd previously added. This adds a
+  per-user entry to
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no admin
+  rights required); unticking removes it. Your folder list and the
+  "wait for new files" setting are remembered between sessions either
+  way.
+
 ## Building a standalone .exe
 
 If you'd rather double-click an app than run `python main.py`, you can
@@ -67,9 +104,10 @@ be built **on Windows** (PyInstaller packages against the OS it runs on).
 Notes:
 - First launch of a `--onefile` build is a bit slower (a second or two)
   because it unpacks itself into a temp folder each run — that's normal.
-- mkvmerge and mediainfo still need to be installed separately and on
-  PATH; the exe still checks for them and shows the same download
-  banner if they're missing.
+- mkvmerge and mediainfo still need to be installed separately (on
+  PATH, or placed next to the exe — see Requirements above); the exe
+  still checks for them and shows the same download banner if they're
+  missing.
 - Rebuilding: just re-run `build.bat` any time you get updated source
   files — it overwrites the previous `dist\AudioCleaner.exe`.
 
@@ -91,7 +129,19 @@ audiocleaner/
   codec_rank.py  codec classification & best-track selection
   processor.py   safe remux -> verify -> atomic replace
   scanner.py     recursive file discovery + pipeline orchestration
+  watcher.py     folder watching for continuous/background cleaning
   worker.py      QThread wrapper (keeps GUI responsive)
   gui.py         PySide6 single-page interface
+  autostart.py   Windows "start with Windows" (HKCU Run key) support
 main.py          entry point
 ```
+
+## ☕ Support This Project
+
+AudioCleaner is free and built in my spare time. If it's useful to you, consider buying me a coffee — it's a big help and genuinely appreciated.
+
+<p align="center">
+  <a href="https://buymeacoffee.com/quinnuk" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="50" width="180">
+  </a>
+</p>
