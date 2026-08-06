@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import shutil
+import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
@@ -135,7 +136,7 @@ class ProbeCache:
         self._data[result.path] = result.to_json()
 
 
-def _run_json(cmd: list[str]) -> dict:
+def _run_json(cmd: list[str], _retried: bool = False) -> dict:
     try:
         proc = subprocess.run(
             cmd,
@@ -152,7 +153,17 @@ def _run_json(cmd: list[str]) -> dict:
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
     if not stdout.strip():
-        raise ExternalToolError(f"{cmd[0]} produced no output: {stderr.strip()}")
+        # Empty stdout AND stderr with a clean process exit usually means
+        # transient contention (parallel probing spawns several tool
+        # processes at once; AV/IO hiccups can interrupt one of them)
+        # rather than a genuinely broken file. Retry once after a brief
+        # pause before treating it as a real failure.
+        if not _retried:
+            time.sleep(0.5)
+            return _run_json(cmd, _retried=True)
+        raise ExternalToolError(
+            f"{cmd[0]} produced no output (exit code {proc.returncode}): {stderr.strip()}"
+        )
     try:
         return json.loads(stdout)
     except json.JSONDecodeError as e:
