@@ -1,0 +1,27 @@
+114 INFO: PyInstaller: 6.21.0, contrib hooks: 2026.6
+114 INFO: Python: 3.14.6
+134 INFO: Platform: Windows-11-10.0.26200-SP0
+134 INFO: Python environment: C:\Users\steve\AppData\Local\Python\pythoncore-3.14-64
+135 DEBUG: Testing UPX availability ...
+135 DEBUG: UPX is not available.
+136 DEBUG: script: C:\Projects\Audiocleaner new\audiocleaner\main.py
+136 INFO: Module search paths (PYTHONPATH):
+['C:\\Projects\\Audiocleaner new\\audiocleaner',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.zip',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\DLLs',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\bin',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\win32',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\win32\\lib',
+ 'C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\pythonwin',
+ 'C:\\Projects\\Audiocleaner new\\audiocleaner']
+375 DEBUG: discover_hook_directories: Hook directories: [('C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\numpy\\_pyinstaller', 0), ('C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\yt_dlp\\__pyinstaller', 0), ('C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks', -1000), ('C:\\Users\\steve\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib', -1000)]
+664 INFO: Appending 'binaries' from .spec
+664 INFO: checking Analysis
+680 INFO: checking PYZ
+686 INFO: checking PKG
+688 INFO: Bootloader C:\Users\steve\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+688 INFO: checking EXE
+690 INFO: Build complete! The results are available in: C:\Projects\Audiocleaner new\audiocleaner\dist

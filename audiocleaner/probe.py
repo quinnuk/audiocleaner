@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import shutil
+import sys
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -40,11 +41,81 @@ REQUIRED_TOOLS = {
 }
 
 
+def _write_debug_log(bundle_dir: Optional[Path]) -> None:
+    """
+    TEMPORARY diagnostic: writes what this process sees to a log file next
+    to the temp dir, so we can tell whether MediaInfo.exe actually made it
+    into the bundle at runtime (vs. being stripped by AV, or not bundled
+    at all). Safe to remove once the missing-tool issue is resolved.
+    """
+    try:
+        log_path = Path(os.environ.get("TEMP", ".")) / "audiocleaner_debug.log"
+        lines = [
+            f"frozen: {getattr(sys, 'frozen', False)}",
+            f"sys.executable: {sys.executable}",
+            f"_MEIPASS attr present: {hasattr(sys, '_MEIPASS')}",
+            f"bundle_dir: {bundle_dir}",
+        ]
+        if bundle_dir is not None:
+            try:
+                lines.append(f"bundle_dir contents: {os.listdir(bundle_dir)}")
+            except OSError as e:
+                lines.append(f"bundle_dir listdir failed: {e}")
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        pass  # diagnostic only, never fatal
+
+
+def _bundle_dir() -> Optional[Path]:
+    """
+    Directory containing bundled binaries, when running as a frozen
+    PyInstaller exe. In onefile mode PyInstaller extracts data/binaries
+    into sys._MEIPASS at launch, before any app code runs -- so this is
+    available immediately, regardless of how the process was started
+    (double-click, Run key, Task Scheduler, whatever). Returns None for
+    dev/interpreter runs.
+    """
+    if getattr(sys, "frozen", False):
+        result = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        _write_debug_log(result)
+        return result
+    return None
+
+
+_tool_path_cache: dict[str, Optional[str]] = {}
+
+
+def _resolve_tool(command: str) -> Optional[str]:
+    """
+    Locate an external tool's executable path. Checks the bundled copy
+    inside the frozen exe first -- this works identically whether the app
+    was just launched from an interactive shell or auto-started at boot,
+    since it never depends on the PATH environment variable at all.
+    Falls back to a PATH lookup (dev runs, or tools that aren't bundled,
+    e.g. mkvmerge). Result is memoized since probing calls this per file.
+    """
+    if command in _tool_path_cache:
+        return _tool_path_cache[command]
+
+    resolved = None
+    bundle_dir = _bundle_dir()
+    if bundle_dir is not None:
+        candidate = bundle_dir / f"{command}.exe"
+        if candidate.exists():
+            resolved = str(candidate)
+
+    if resolved is None:
+        resolved = shutil.which(command)
+
+    _tool_path_cache[command] = resolved
+    return resolved
+
+
 def get_missing_tools() -> list[dict]:
     """Returns a list of missing-tool info dicts (empty list = all present)."""
     missing = []
     for tool, info in REQUIRED_TOOLS.items():
-        if shutil.which(tool) is None:
+        if _resolve_tool(tool) is None:
             missing.append({"command": tool, **info})
     return missing
 
@@ -180,25 +251,30 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
     stat = path.stat()
     result = FileProbeResult(path=str(path), size=stat.st_size, mtime=stat.st_mtime)
 
+    mkvmerge_path = _resolve_tool("mkvmerge") or "mkvmerge"
     try:
-        mkv_data = _run_json(["mkvmerge", "-J", str(path)])
+        mkv_data = _run_json([mkvmerge_path, "-J", str(path)])
     except ExternalToolError as e:
         result.error = f"mkvmerge probe failed: {e}"
         if cache is not None:
             cache.put(result)
         return result
 
-    # mediainfo is best-effort; if it fails we fall back to mkvmerge-only data.
+    # mediainfo is best-effort; if it's missing or fails we fall back to
+    # mkvmerge-only data. Bundled copy is checked first (see _resolve_tool),
+    # so this no longer depends on PATH being ready at boot.
     mi_audio_by_id: dict[int, dict] = {}
-    try:
-        mi_data = _run_json(["mediainfo", "--Output=JSON", str(path)])
-        for track in mi_data.get("media", {}).get("track", []):
-            if track.get("@type") == "Audio":
-                # mediainfo "StreamOrder" or "ID" roughly maps to mkvmerge track id;
-                # we match by position among audio tracks as a robust fallback.
-                mi_audio_by_id[len(mi_audio_by_id)] = track
-    except ExternalToolError:
-        pass
+    mediainfo_path = _resolve_tool("mediainfo")
+    if mediainfo_path is not None:
+        try:
+            mi_data = _run_json([mediainfo_path, "--Output=JSON", str(path)])
+            for track in mi_data.get("media", {}).get("track", []):
+                if track.get("@type") == "Audio":
+                    # mediainfo "StreamOrder" or "ID" roughly maps to mkvmerge track id;
+                    # we match by position among audio tracks as a robust fallback.
+                    mi_audio_by_id[len(mi_audio_by_id)] = track
+        except ExternalToolError:
+            pass
 
     audio_index = 0
     for track in mkv_data.get("tracks", []):

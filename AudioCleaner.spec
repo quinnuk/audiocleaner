@@ -1,10 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-
-
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('MediaInfo.exe', '.')],
     datas=[],
     hiddenimports=[],
     hookspath=[],
@@ -15,7 +13,6 @@ a = Analysis(
     optimize=0,
 )
 pyz = PYZ(a.pure)
-
 exe = EXE(
     pyz,
     a.scripts,

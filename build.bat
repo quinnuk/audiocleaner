@@ -10,8 +10,15 @@ if errorlevel 1 (
 )
 
 echo.
-echo Building AudioCleaner.exe...
-python -m PyInstaller --noconfirm --onefile --windowed --name AudioCleaner main.py
+echo Clearing old PyInstaller onefile extraction caches from %TEMP%...
+for /d %%D in ("%TEMP%\_MEI*") do (
+    echo   removing %%D
+    rmdir /s /q "%%D"
+)
+
+echo.
+echo Building AudioCleaner.exe from AudioCleaner.spec...
+python -m PyInstaller --noconfirm AudioCleaner.spec
 if errorlevel 1 (
     echo Build failed - see the messages above.
     pause
