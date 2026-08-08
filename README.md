@@ -16,7 +16,13 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/license-BSD--2--Clause-green?style=for-the-badge" alt="License">
 </p>
-
+<p align="center">
+  <a href="https://buymeacoffee.com/quinnuk" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="60" width="217">
+  </a>
+  <br>
+  <sub>If AudioCleaner saves you disk space, a coffee is always appreciated ☕</sub>
+</p>
 <p align="center">
   <img src="screenshot.jpg" alt="AudioCleaner application screenshot" width="900">
 </p>
@@ -418,9 +424,7 @@ AudioCleaner uses MediaInfo alongside `mkvmerge` to reliably detect formats such
 
 ## ☕ Support This Project
 
-AudioCleaner is free and built in my spare time.
-
-If it saves you disk space or makes managing your media library easier, consider buying me a coffee — it's a big help and genuinely appreciated.
+AudioCleaner is free and built in my spare time — if it's useful to you, consider buying me a coffee.
 
 <p align="center">
   <a href="https://buymeacoffee.com/quinnuk">
