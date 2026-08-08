@@ -22,7 +22,7 @@ import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QTextCursor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -41,12 +41,37 @@ from . import autostart
 # end up watching/remuxing the same folder at the same time.
 _SINGLE_INSTANCE_SERVER_NAME = f"{APP_NAME}-SingleInstance"
 
+# Colour used for each result status in the status log (None = default
+# text colour, used for plain informational lines like heartbeats).
+_STATUS_COLORS = {
+    "cleaned": QColor("#2e7d32"),               # green
+    "error": QColor("#c62828"),                 # red
+    "no_english": QColor("#b8860b"),             # amber
+    "skipped_single_track": QColor("#6b6b6b"),  # muted grey
+}
+
+
+def _icon_path() -> str | None:
+    """Locate the bundled app icon, whether running frozen (PyInstaller
+    one-file, extracted to sys._MEIPASS at runtime) or from source (sitting
+    in the project root during development)."""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        base = Path(__file__).resolve().parent.parent
+    candidate = base / "audio_cleaner_icon.ico"
+    return str(candidate) if candidate.is_file() else None
+
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.resize(680, 600)
+
+        icon_path = _icon_path()
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
 
         self.settings = QSettings()
 
@@ -290,7 +315,11 @@ class MainWindow(QWidget):
     # ---------------------------------------------------------- system tray
     def _setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+        icon_path = _icon_path()
+        if icon_path:
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
         self.tray_icon.setToolTip(APP_NAME)
 
         menu = QMenu()
@@ -521,7 +550,7 @@ class MainWindow(QWidget):
         self._watch_processed_count += 1
         self.files_count_label.setText(f"{self._watch_processed_count} processed")
         self.current_file_label.setText(Path(result.path).name)
-        self._log(_format_result_line(result))
+        self._log(_format_result_line(result), status=result.status)
 
     def _on_watch_heartbeat(self, message: str):
         self._log(message)
@@ -575,7 +604,7 @@ class MainWindow(QWidget):
             self.eta_label.setText(_format_seconds(remaining))
 
     def _on_file_done(self, result):
-        self._log(_format_result_line(result))
+        self._log(_format_result_line(result), status=result.status)
 
     def _on_failed(self, message: str):
         self.start_btn.setEnabled(True)
@@ -584,8 +613,16 @@ class MainWindow(QWidget):
         self._run_queue.clear()
         QMessageBox.critical(self, APP_NAME, f"AudioCleaner stopped unexpectedly:\n{message}")
 
-    def _log(self, line: str):
-        self.status_box.appendPlainText(line)
+    def _log(self, line: str, status: str | None = None):
+        cursor = self.status_box.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextCharFormat()
+        color = _STATUS_COLORS.get(status)
+        if color:
+            fmt.setForeground(color)
+        cursor.insertText(line + "\n", fmt)
+        self.status_box.setTextCursor(cursor)
+        self.status_box.ensureCursorVisible()
 
 
 def _format_result_line(result) -> str:
@@ -620,6 +657,9 @@ def main():
     app.setOrganizationName(APP_NAME)
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)  # keep running when hidden to tray
+    icon_path = _icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
 
     # --- single instance check ---
     # If another AudioCleaner is already running, ping it to show itself

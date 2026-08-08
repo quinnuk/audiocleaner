@@ -1,9 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+
+
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[('MediaInfo.exe', '.')],
-    datas=[],
+    binaries=[
+        ('MediaInfo.exe', '.'),
+        ('LIBCURL.DLL', '.'),
+    ],
+    datas=[
+        ('audio_cleaner_icon.ico', '.'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -13,6 +20,7 @@ a = Analysis(
     optimize=0,
 )
 pyz = PYZ(a.pure)
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -32,4 +40,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='audio_cleaner_icon.ico',
 )
