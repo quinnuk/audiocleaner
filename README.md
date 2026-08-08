@@ -37,7 +37,7 @@ Dolby Atmos always wins when present, and AudioCleaner never re-encodes your med
 
 English audio tracks are ranked in this order:
 
-**Atmos → DTS:X → TrueHD → DTS-HD MA → LPCM → FLAC → E-AC3 → DTS → AC3 → AAC → MP3**
+**Atmos + TrueHD → DTS:X → TrueHD → DTS-HD MA → LPCM → FLAC → E-AC3 → DTS → AC3 → AAC → MP3**
 
 ---
 
@@ -62,13 +62,13 @@ Every file follows a safe temporary-file workflow:
 Original MKV
      │
      ▼
- Analyse tracks
+ Analyse tracks (mkvmerge + MediaInfo, run in parallel)
      │
      ▼
  Select best English track
      │
      ▼
- Create temporary MKV
+ Create temporary MKV (name.ac_tmp.mkv)
      │
      ▼
  Verify result
@@ -82,7 +82,7 @@ Original MKV
      └─────────────── ✅ Passed
                           │
                           ▼
-                    Replace original
+              Atomically replace original (os.replace)
 ```
 
 The original file is **never replaced until the new file has been successfully created and verified**.
@@ -151,8 +151,10 @@ python main.py
 
 - **Windows**
 - **Python 3.10+**
-- **[MKVToolNix](https://mkvtoolnix.download/)** — provides `mkvmerge`. It must be on your `PATH`, or its executable must be placed in the project directory.
-- **[MediaInfo](https://mediaarea.net/en/MediaInfo)** (CLI edition) — used alongside `mkvmerge` to reliably detect Atmos / DTS:X. It must be on your `PATH`, or its executable must be placed in the project directory.
+- **[MKVToolNix](https://mkvtoolnix.download/)** — provides `mkvmerge`. Must be on your `PATH`, or its executable placed in the project directory (or next to `AudioCleaner.exe`).
+- **[MediaInfo](https://mediaarea.net/en/MediaInfo)** (CLI edition) — used alongside `mkvmerge` to reliably detect Atmos / DTS:X. Must be on your `PATH`, or its executable placed in the project directory (or next to `AudioCleaner.exe`).
+
+If you're running the standalone `.exe`, keeping `MediaInfo.exe` directly next to `AudioCleaner.exe` is the simplest option and avoids a system-wide install.
 
 Check both are installed correctly:
 
@@ -171,13 +173,13 @@ AudioCleaner follows a simple and safe processing pipeline.
 
 Click **Add Folder…** once for each movie or TV library.
 
-Folders can be located on completely different drives and do not need to share a common parent directory. Each folder is tracked independently, with its own cache and log file.
+Folders can be located on completely different drives and do not need to share a common parent directory. Each folder is tracked independently, with its own cache and log file living inside that folder.
 
 ### 2. 🔍 Scan
 
 AudioCleaner recursively finds every `.mkv` file under the selected folders.
 
-Metadata is probed using `mkvmerge` and MediaInfo and cached in:
+Metadata is probed in parallel using `mkvmerge` and MediaInfo, and cached in:
 
 ```text
 .audiocleaner_cache.json
@@ -225,7 +227,7 @@ Everything else is remuxed to a temporary file:
 name.ac_tmp.mkv
 ```
 
-The temporary file contains only the chosen audio track while preserving the video, subtitles, chapters, fonts, attachments, and metadata.
+The temporary file contains only the chosen audio track while preserving the video, subtitles, chapters, fonts, attachments, and metadata (mkvmerge's default behaviour).
 
 **Nothing is re-encoded.**
 
@@ -233,7 +235,7 @@ The temporary file contains only the chosen audio track while preserving the vid
 
 The temporary file is probed to confirm that it contains exactly one audio track in the expected language.
 
-Only after verification succeeds does AudioCleaner atomically replace the original.
+Only after verification succeeds does AudioCleaner atomically replace the original (`os.replace`).
 
 If verification fails, the temporary file is discarded and the original is never touched.
 
@@ -249,11 +251,9 @@ The log can be opened directly from the application using **Open Log**.
 
 ---
 
-## 👁️ Watch Mode
+## 👁️ Watch Mode, System Tray & Autostart
 
-AudioCleaner can run continuously in the background and automatically clean new files as they arrive.
-
-This is particularly useful alongside applications such as **Radarr** and **Sonarr**.
+Beyond a one-off scan, AudioCleaner can run continuously in the background and clean new files as they arrive — particularly useful alongside applications such as **Radarr** and **Sonarr**.
 
 ```text
 ┌────────────────┐
@@ -297,17 +297,12 @@ This is particularly useful alongside applications such as **Radarr** and **Sona
 
 ### Watch Mode Features
 
-- **Start Watching All Folders** — runs a lightweight watcher for each configured folder.
+- **Start Watching All Folders** — runs a lightweight watcher for each configured folder, using the same select → process → verify → replace pipeline as a manual run.
 - Detects new or changed `.mkv` files.
-- Waits for files to finish copying before processing.
-- Automatically cleans new files.
+- Waits for files to finish copying before processing — configurable via the "Wait for new files to finish copying" setting, **default 120 seconds**, matching typical Radarr/Sonarr move behaviour.
 - Continues running in the background.
 
-The default file-stability wait is **120 seconds**, matching typical Radarr/Sonarr move behaviour.
-
----
-
-## 🖥️ System Tray
+### System Tray
 
 Closing the AudioCleaner window minimises it to the Windows system tray instead of quitting, allowing Watch Mode to continue running in the background.
 
@@ -318,9 +313,9 @@ Right-click the tray icon to access:
 - **Stop Watching**
 - **Quit**
 
----
+Quit is the only way to fully exit while watching.
 
-## 🚀 Start with Windows
+### Start with Windows
 
 AudioCleaner can optionally launch automatically when you sign into Windows.
 
@@ -337,7 +332,7 @@ AudioCleaner adds a per-user entry to:
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 ```
 
-No administrator rights are required.
+No administrator rights are required, and unticking the option removes the entry. Your folder list and the "wait for new files" setting are remembered between sessions either way.
 
 ---
 
@@ -371,15 +366,9 @@ For a new library, it is worth spot-checking the log after the first scan.
 
 If you'd rather build AudioCleaner yourself instead of using the release download:
 
-```cmd
-build.bat
-```
-
-The build script installs PyInstaller if needed and creates:
-
-```text
-dist\AudioCleaner.exe
-```
+1. Make sure `pip install -r requirements.txt` has already been run.
+2. Double-click **`build.bat`** in this folder (or run it from a Command Prompt).
+3. It installs PyInstaller if needed, then builds. When it finishes, your exe is at `dist\AudioCleaner.exe` — copy that one file anywhere you like and run it directly. No Python installation is needed on the machine you copy it to.
 
 ### Build Notes
 
@@ -387,6 +376,7 @@ dist\AudioCleaner.exe
 - The first launch of a `--onefile` build may be slightly slower because it extracts itself into a temporary directory.
 - `mkvmerge` still needs to be installed separately.
 - The executable checks for `mkvmerge` and shows a download prompt if it is missing.
+- Rebuilding: just re-run `build.bat` any time you get updated source files — it overwrites the previous `dist\AudioCleaner.exe`.
 
 ---
 
@@ -398,12 +388,12 @@ audiocleaner/
 ├── probe.py        # mkvmerge/MediaInfo wrappers & on-disk cache
 ├── codec_rank.py   # Codec classification & best-track selection
 ├── processor.py    # Safe remux → verify → atomic replace
-├── scanner.py      # Recursive file discovery & pipeline orchestration
-├── watcher.py      # Folder watching for continuous/background cleaning
-├── worker.py       # QThread wrapper to keep the GUI responsive
-├── gui.py          # PySide6 single-page interface
-├── autostart.py    # Windows "Start with Windows" support
-└── main.py         # Application entry point
+├── scanner.py       # Recursive file discovery & pipeline orchestration
+├── watcher.py       # Folder watching for continuous/background cleaning
+├── worker.py        # QThread wrapper to keep the GUI responsive
+├── gui.py           # PySide6 single-page interface
+├── autostart.py     # Windows "Start with Windows" support
+└── main.py          # Application entry point
 ```
 
 ---
