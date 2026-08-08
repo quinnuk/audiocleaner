@@ -14,6 +14,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass, field, asdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -41,81 +42,50 @@ REQUIRED_TOOLS = {
 }
 
 
-def _write_debug_log(bundle_dir: Optional[Path]) -> None:
-    """
-    TEMPORARY diagnostic: writes what this process sees to a log file next
-    to the temp dir, so we can tell whether MediaInfo.exe actually made it
-    into the bundle at runtime (vs. being stripped by AV, or not bundled
-    at all). Safe to remove once the missing-tool issue is resolved.
-    """
-    try:
-        log_path = Path(os.environ.get("TEMP", ".")) / "audiocleaner_debug.log"
-        lines = [
-            f"frozen: {getattr(sys, 'frozen', False)}",
-            f"sys.executable: {sys.executable}",
-            f"_MEIPASS attr present: {hasattr(sys, '_MEIPASS')}",
-            f"bundle_dir: {bundle_dir}",
-        ]
-        if bundle_dir is not None:
-            try:
-                lines.append(f"bundle_dir contents: {os.listdir(bundle_dir)}")
-            except OSError as e:
-                lines.append(f"bundle_dir listdir failed: {e}")
-        log_path.write_text("\n".join(lines), encoding="utf-8")
-    except OSError:
-        pass  # diagnostic only, never fatal
-
-
 def _bundle_dir() -> Optional[Path]:
-    """
-    Directory containing bundled binaries, when running as a frozen
-    PyInstaller exe. In onefile mode PyInstaller extracts data/binaries
-    into sys._MEIPASS at launch, before any app code runs -- so this is
-    available immediately, regardless of how the process was started
-    (double-click, Run key, Task Scheduler, whatever). Returns None for
-    dev/interpreter runs.
-    """
+    """Directory holding files bundled into the frozen exe (PyInstaller
+    one-file builds extract these to a temp dir at runtime, exposed via
+    sys._MEIPASS). Returns None for a normal (non-frozen) interpreter run."""
     if getattr(sys, "frozen", False):
-        result = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-        _write_debug_log(result)
-        return result
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     return None
 
 
-_tool_path_cache: dict[str, Optional[str]] = {}
-
-
-def _resolve_tool(command: str) -> Optional[str]:
+@lru_cache(maxsize=None)
+def find_tool(name: str) -> Optional[str]:
     """
-    Locate an external tool's executable path. Checks the bundled copy
-    inside the frozen exe first -- this works identically whether the app
-    was just launched from an interactive shell or auto-started at boot,
-    since it never depends on the PATH environment variable at all.
-    Falls back to a PATH lookup (dev runs, or tools that aren't bundled,
-    e.g. mkvmerge). Result is memoized since probing calls this per file.
+    Locate an external tool's executable, in order of preference:
+      1. Bundled alongside the frozen exe (sys._MEIPASS) - this is what
+         boot-time autostart launches will use, so it never depends on
+         PATH being fresh for whichever user/session context spawned it.
+      2. The project root, for convenience when running from source
+         during development (where the extracted CLI tool currently sits).
+      3. PATH, via shutil.which - last resort, and the only option for
+         tools that aren't bundled (e.g. MKVToolNix, currently).
+    Result is cached for the life of the process since installed tool
+    locations don't change while the app is running.
     """
-    if command in _tool_path_cache:
-        return _tool_path_cache[command]
+    exe_name = f"{name}.exe" if os.name == "nt" else name
 
-    resolved = None
-    bundle_dir = _bundle_dir()
-    if bundle_dir is not None:
-        candidate = bundle_dir / f"{command}.exe"
-        if candidate.exists():
-            resolved = str(candidate)
+    bundle = _bundle_dir()
+    if bundle:
+        candidate = bundle / exe_name
+        if candidate.is_file():
+            return str(candidate)
 
-    if resolved is None:
-        resolved = shutil.which(command)
+    project_root = Path(__file__).resolve().parent.parent
+    candidate = project_root / exe_name
+    if candidate.is_file():
+        return str(candidate)
 
-    _tool_path_cache[command] = resolved
-    return resolved
+    return shutil.which(name)
 
 
 def get_missing_tools() -> list[dict]:
     """Returns a list of missing-tool info dicts (empty list = all present)."""
     missing = []
     for tool, info in REQUIRED_TOOLS.items():
-        if _resolve_tool(tool) is None:
+        if find_tool(tool) is None:
             missing.append({"command": tool, **info})
     return missing
 
@@ -207,12 +177,17 @@ class ProbeCache:
         self._data[result.path] = result.to_json()
 
 
-def _run_json(cmd: list[str], _retried: bool = False) -> dict:
+def _run_json(cmd: list[str], _attempt: int = 0) -> dict:
+    # Backoff schedule gives a spun-down HDD real time to wake up (spin-up
+    # commonly takes several seconds) rather than giving up after 0.5s.
+    _RETRY_DELAYS = [1, 3, 6]  # seconds before attempts 2, 3, 4
+
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
             check=False,
             creationflags=_NO_WINDOW,
@@ -221,19 +196,22 @@ def _run_json(cmd: list[str], _retried: bool = False) -> dict:
         raise ExternalToolError(f"Tool not found: {cmd[0]}") from e
     except subprocess.TimeoutExpired as e:
         raise ExternalToolError(f"{cmd[0]} timed out") from e
+    except UnicodeDecodeError as e:
+        raise ExternalToolError(f"{cmd[0]} output could not be decoded as UTF-8: {e}") from e
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
     if not stdout.strip():
         # Empty stdout AND stderr with a clean process exit usually means
-        # transient contention (parallel probing spawns several tool
-        # processes at once; AV/IO hiccups can interrupt one of them)
-        # rather than a genuinely broken file. Retry once after a brief
-        # pause before treating it as a real failure.
-        if not _retried:
-            time.sleep(0.5)
-            return _run_json(cmd, _retried=True)
+        # transient contention - a spun-down drive still waking up, AV
+        # briefly holding the file, parallel probes competing for disk -
+        # rather than a genuinely broken file. Retry a few times with
+        # increasing pauses before treating it as a real failure.
+        if _attempt < len(_RETRY_DELAYS):
+            time.sleep(_RETRY_DELAYS[_attempt])
+            return _run_json(cmd, _attempt=_attempt + 1)
         raise ExternalToolError(
-            f"{cmd[0]} produced no output (exit code {proc.returncode}): {stderr.strip()}"
+            f"{cmd[0]} produced no output after {_attempt + 1} attempts "
+            f"(exit code {proc.returncode}): {stderr.strip()}"
         )
     try:
         return json.loads(stdout)
@@ -251,20 +229,28 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
     stat = path.stat()
     result = FileProbeResult(path=str(path), size=stat.st_size, mtime=stat.st_mtime)
 
-    mkvmerge_path = _resolve_tool("mkvmerge") or "mkvmerge"
+    mkvmerge_path = find_tool("mkvmerge")
+    if mkvmerge_path is None:
+        result.error = "mkvmerge probe failed: MKVToolNix (mkvmerge) not found"
+        # Not cached: a missing-tool error should be re-checked every run,
+        # not permanently remembered against this file.
+        return result
+
     try:
         mkv_data = _run_json([mkvmerge_path, "-J", str(path)])
     except ExternalToolError as e:
         result.error = f"mkvmerge probe failed: {e}"
-        if cache is not None:
-            cache.put(result)
+        # Not cached: this is very likely transient (spun-down drive still
+        # waking, AV briefly holding the file, momentary contention during
+        # a big batch). Caching it would "freeze" a one-off hiccup into a
+        # permanent failure that gets replayed on every future scan, since
+        # the cache key (path/size/mtime) never changes for an untouched
+        # file. Leaving it uncached means the next scan gets a clean retry.
         return result
 
-    # mediainfo is best-effort; if it's missing or fails we fall back to
-    # mkvmerge-only data. Bundled copy is checked first (see _resolve_tool),
-    # so this no longer depends on PATH being ready at boot.
+    # mediainfo is best-effort; if it fails we fall back to mkvmerge-only data.
     mi_audio_by_id: dict[int, dict] = {}
-    mediainfo_path = _resolve_tool("mediainfo")
+    mediainfo_path = find_tool("mediainfo")
     if mediainfo_path is not None:
         try:
             mi_data = _run_json([mediainfo_path, "--Output=JSON", str(path)])

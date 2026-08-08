@@ -10,12 +10,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .probe import probe_file, FileProbeResult, ExternalToolError
+from .probe import probe_file, FileProbeResult, ExternalToolError, find_tool
 from .codec_rank import select_best_english_track
 
 # Suppress console window creation for subprocess calls in a windowed
 # (console=False) build -- otherwise Windows pops a new console per call.
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+# PROCESS_MODE_BACKGROUND_BEGIN: tells Windows this process is doing
+# background work, which lowers its CPU, memory, *and* I/O priority
+# together (stronger than just CPU priority - it's specifically what
+# stops a big disk-heavy job like this from starving other programs,
+# e.g. Plex, that are reading from the same physical drive at the
+# same time). No effect on non-Windows platforms.
+_BACKGROUND_MODE = 0x00100000 if os.name == "nt" else 0
+_REMUX_CREATE_FLAGS = _NO_WINDOW | _BACKGROUND_MODE
 
 
 @dataclass
@@ -63,8 +72,13 @@ def process_file(path: Path, cache=None) -> ProcessResult:
         except OSError:
             pass
 
+    mkvmerge_path = find_tool("mkvmerge")
+    if mkvmerge_path is None:
+        return ProcessResult(path=str(path), status="error",
+                              message="mkvmerge not found (checked bundled copy and PATH).")
+
     cmd = [
-        "mkvmerge",
+        mkvmerge_path,
         "-o", str(temp_path),
         "--audio-tracks", str(best_track.track_id),
         str(path),
@@ -74,9 +88,10 @@ def process_file(path: Path, cache=None) -> ProcessResult:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3600,
-            creationflags=_NO_WINDOW,
+            creationflags=_REMUX_CREATE_FLAGS,
         )
     except FileNotFoundError:
         return ProcessResult(path=str(path), status="error",

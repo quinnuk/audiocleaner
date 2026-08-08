@@ -7,3 +7,7 @@ Local watch-mode cache & logs created at runtime in watched folders
 Editor/OS cruft
 .vscode/ .idea/ Thumbs.db
 
+
+AudioCleaner.exe
+build/
+dist/
