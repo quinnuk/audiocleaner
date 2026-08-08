@@ -114,6 +114,18 @@ class AudioTrackInfo:
     mediainfo_additional_features: str = ""
     default: bool = False
     forced: bool = False
+    track_name: str = ""       # mkvmerge track title/name, if any
+    commentary: bool = False   # mkvmerge flag_commentary, or inferred from name
+
+
+@dataclass
+class SubtitleTrackInfo:
+    track_id: int
+    language: str
+    codec_id: str = ""     # e.g. "S_TEXT/UTF8", "S_HDMV/PGS"
+    track_name: str = ""
+    forced: bool = False
+    default: bool = False
 
 
 @dataclass
@@ -121,7 +133,8 @@ class FileProbeResult:
     path: str
     size: int
     mtime: float
-    audio_tracks: list = field(default_factory=list)  # list[AudioTrackInfo]
+    audio_tracks: list = field(default_factory=list)      # list[AudioTrackInfo]
+    subtitle_tracks: list = field(default_factory=list)   # list[SubtitleTrackInfo]
     error: Optional[str] = None
 
     def to_json(self) -> dict:
@@ -131,9 +144,10 @@ class FileProbeResult:
     @staticmethod
     def from_json(d: dict) -> "FileProbeResult":
         tracks = [AudioTrackInfo(**t) for t in d.get("audio_tracks", [])]
+        subs = [SubtitleTrackInfo(**t) for t in d.get("subtitle_tracks", [])]
         return FileProbeResult(
             path=d["path"], size=d["size"], mtime=d["mtime"],
-            audio_tracks=tracks, error=d.get("error"),
+            audio_tracks=tracks, subtitle_tracks=subs, error=d.get("error"),
         )
 
 
@@ -170,6 +184,13 @@ class ProbeCache:
         except OSError:
             return None
         if entry["size"] != stat.st_size or entry["mtime"] != stat.st_mtime:
+            return None
+        if "subtitle_tracks" not in entry:
+            # Written by a version of this app that predates subtitle
+            # probing. Treat as a cache miss (not "zero subtitles") so this
+            # file gets one fresh probe and picks up real subtitle data --
+            # otherwise subtitle filtering would silently never apply to
+            # anything that was already cached before this feature existed.
             return None
         return FileProbeResult.from_json(entry)
 
@@ -268,6 +289,7 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
             continue
         props = track.get("properties", {})
         mi_track = mi_audio_by_id.get(audio_index, {})
+        track_name = props.get("track_name", "") or ""
         result.audio_tracks.append(
             AudioTrackInfo(
                 track_id=track.get("id"),
@@ -280,9 +302,30 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
                 mediainfo_additional_features=mi_track.get("Format_AdditionalFeatures", ""),
                 default=bool(props.get("default_track", False)),
                 forced=bool(props.get("forced_track", False)),
+                track_name=track_name,
+                # Prefer mkvmerge's own commentary flag when present; fall
+                # back to a name-text check for files where it isn't set
+                # (many older/less-careful rips never flag it at all).
+                commentary=bool(props.get("flag_commentary", False))
+                           or "commentary" in track_name.lower(),
             )
         )
         audio_index += 1
+
+    for track in mkv_data.get("tracks", []):
+        if track.get("type") != "subtitles":
+            continue
+        props = track.get("properties", {})
+        result.subtitle_tracks.append(
+            SubtitleTrackInfo(
+                track_id=track.get("id"),
+                language=(props.get("language") or props.get("language_ietf") or "und").lower(),
+                codec_id=props.get("codec_id", ""),
+                track_name=props.get("track_name", "") or "",
+                forced=bool(props.get("forced_track", False)),
+                default=bool(props.get("default_track", False)),
+            )
+        )
 
     if cache is not None:
         cache.put(result)

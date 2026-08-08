@@ -41,6 +41,24 @@ CODEC_LABELS = {
 # English language tags as they appear in MKV/mkvmerge/mediainfo output.
 ENGLISH_LANG_CODES = {"eng", "en", "en-us", "en-gb"}
 
+# --- Commentary tracks ---
+# Off by default: commentary tracks are treated like any other extra audio
+# track and stripped. When on, the single best non-commentary track is
+# still chosen as "the" kept track, but commentary track(s) are kept
+# alongside it rather than being removed.
+DEFAULT_KEEP_COMMENTARY = False
+
+# --- Subtitle language filtering ---
+# Off by default, so existing behaviour (subtitles are never touched) is
+# unchanged unless a user explicitly opts in. When on, only subtitle
+# tracks matching a language in DEFAULT_SUBTITLE_LANGUAGES are kept,
+# *plus* any track flagged Forced regardless of language (these are
+# usually foreign-dialogue captions within an otherwise-English film that
+# people expect kept even when everything else in that language is
+# stripped).
+DEFAULT_SUBTITLE_FILTER_ENABLED = False
+DEFAULT_SUBTITLE_LANGUAGES = {"eng"}
+
 # Cache file name written into the target root folder.
 CACHE_FILENAME = ".audiocleaner_cache.json"
 

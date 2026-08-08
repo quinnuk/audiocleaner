@@ -19,6 +19,14 @@ def _is_english(track: AudioTrackInfo) -> bool:
     return track.language.lower() in ENGLISH_LANG_CODES
 
 
+def is_commentary(track: AudioTrackInfo) -> bool:
+    """True if a track is a commentary track. Trusts mkvmerge's own
+    flag_commentary property when present; probe.py already falls back to
+    a name-text check ("commentary" in the track title) for files that
+    never set the flag, so this just reads what probe.py already decided."""
+    return bool(getattr(track, "commentary", False))
+
+
 def classify_audio_track(track: AudioTrackInfo) -> str:
     """Return an internal codec key (see config.CODEC_PRIORITY) for a track."""
     codec_id = (track.codec_id or "").upper()
@@ -67,35 +75,93 @@ def rank_of(codec_key: str) -> int:
     return CODEC_RANK.get(codec_key, len(CODEC_RANK))
 
 
-def select_best_english_track(
+def select_audio_tracks_to_keep(
     result: FileProbeResult,
-) -> tuple[Optional[AudioTrackInfo], Optional[str]]:
+    keep_commentary: bool = False,
+) -> tuple[Optional[AudioTrackInfo], Optional[str], list]:
     """
-    Returns (best_track, codec_key) for the highest-priority English audio
-    track in a probed file, or (None, None) if no English audio exists.
+    Returns (best_track, codec_key, extra_tracks):
+      - best_track / codec_key: the single highest-priority English track,
+        chosen from non-commentary tracks whenever any exist (so a
+        commentary track never accidentally becomes "the" kept track,
+        regardless of the keep_commentary setting).
+      - extra_tracks: additional English commentary track(s) to keep
+        alongside best_track. Empty unless keep_commentary is True.
+    Returns (None, None, []) if no English audio exists at all.
     """
     english_tracks = [t for t in result.audio_tracks if _is_english(t)]
     if not english_tracks:
-        return None, None
+        return None, None, []
+
+    non_commentary = [t for t in english_tracks if not is_commentary(t)]
+    commentary_tracks = [t for t in english_tracks if is_commentary(t)]
+
+    # Rank among non-commentary tracks normally; only fall back to ranking
+    # commentary tracks if that's genuinely all the English audio a file has.
+    candidates = non_commentary or english_tracks
 
     best_track = None
     best_key = None
     best_rank = None
-    for track in english_tracks:
+    for track in candidates:
         key = classify_audio_track(track)
         rank = rank_of(key)
         if best_rank is None or rank < best_rank:
             best_track, best_key, best_rank = track, key, rank
 
+    extra_tracks = []
+    if keep_commentary and best_track is not None:
+        extra_tracks = [t for t in commentary_tracks if t.track_id != best_track.track_id]
+
+    return best_track, best_key, extra_tracks
+
+
+def select_best_english_track(
+    result: FileProbeResult,
+) -> tuple[Optional[AudioTrackInfo], Optional[str]]:
+    """Back-compat wrapper: best track only, no commentary handling."""
+    best_track, best_key, _ = select_audio_tracks_to_keep(result, keep_commentary=False)
     return best_track, best_key
 
 
-def needs_processing(result: FileProbeResult) -> bool:
+def select_subtitle_tracks_to_keep(
+    result: FileProbeResult,
+    keep_languages,
+) -> list:
     """
-    A file needs no processing only if it already has exactly one audio
-    track and that track is English (per spec: 'if only one English audio
-    track exists, keep it' -- with a single track there's nothing to strip).
+    Subtitle tracks to keep when subtitle filtering is enabled: any track
+    whose language is in keep_languages, plus any track flagged Forced
+    regardless of language (these are usually foreign-dialogue captions
+    within an otherwise-English film, expected to stay even when
+    everything else in that language gets stripped).
     """
-    if len(result.audio_tracks) != 1:
+    langs = {l.lower() for l in (keep_languages or ())}
+    return [t for t in result.subtitle_tracks if t.forced or t.language.lower() in langs]
+
+
+def needs_processing(
+    result: FileProbeResult,
+    keep_commentary: bool = False,
+    subtitle_filter_enabled: bool = False,
+    subtitle_languages=None,
+) -> bool:
+    """
+    A file needs processing if the audio tracks that would be kept differ
+    from what's already on disk, or (when subtitle filtering is enabled)
+    if the subtitle tracks that would be kept differ from what's on disk.
+    """
+    best_track, _key, extra_tracks = select_audio_tracks_to_keep(result, keep_commentary=keep_commentary)
+    if best_track is None:
+        return True  # no English audio at all - report as an error case upstream
+
+    keep_ids = {best_track.track_id} | {t.track_id for t in extra_tracks}
+    original_ids = {t.track_id for t in result.audio_tracks}
+    if keep_ids != original_ids:
         return True
-    return not _is_english(result.audio_tracks[0])
+
+    if subtitle_filter_enabled and result.subtitle_tracks:
+        kept_subs = select_subtitle_tracks_to_keep(result, subtitle_languages or set())
+        if {t.track_id for t in kept_subs} != {t.track_id for t in result.subtitle_tracks}:
+            return True
+
+    return False

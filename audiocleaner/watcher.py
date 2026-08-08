@@ -63,7 +63,13 @@ class WatchState:
 
 
 def watch_iteration(
-    root: Path, state: WatchState, cache: ProbeCache, settle_seconds: int
+    root: Path,
+    state: WatchState,
+    cache: ProbeCache,
+    settle_seconds: int,
+    keep_commentary: bool = False,
+    subtitle_filter_enabled: bool = False,
+    subtitle_languages: Optional[set] = None,
 ) -> list[ProcessResult]:
     """
     One polling pass over the folder tree. Returns a ProcessResult for
@@ -85,7 +91,12 @@ def watch_iteration(
         if not state.is_settled(path, settle_seconds):
             continue  # still copying (or just arrived) -- wait
 
-        result = process_file(path, cache=cache)
+        result = process_file(
+            path, cache=cache,
+            keep_commentary=keep_commentary,
+            subtitle_filter_enabled=subtitle_filter_enabled,
+            subtitle_languages=subtitle_languages,
+        )
         # Mark processed regardless of outcome (including errors) so a
         # broken file doesn't get retried forever on every poll.
         state.mark_processed(path)

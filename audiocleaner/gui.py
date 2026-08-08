@@ -28,13 +28,38 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox,
     QGroupBox, QFormLayout, QSpinBox, QFrame, QListWidget, QCheckBox,
-    QSystemTrayIcon, QMenu, QStyle,
+    QSystemTrayIcon, QMenu, QStyle, QScrollArea,
 )
 
-from .config import APP_NAME, LOG_FILENAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS
-from .worker import CleanerWorker, WatchWorker
+from .config import (
+    APP_NAME, LOG_FILENAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
+    DEFAULT_KEEP_COMMENTARY, DEFAULT_SUBTITLE_FILTER_ENABLED, DEFAULT_SUBTITLE_LANGUAGES,
+)
+from .worker import CleanerWorker, WatchWorker, LanguageScanWorker
 from .probe import check_tools_available, get_missing_tools
 from . import autostart
+
+# Friendly display names for subtitle-language checkboxes. Falls back to
+# the raw ISO code for anything not listed here.
+_LANGUAGE_NAMES = {
+    "eng": "English", "ger": "German", "deu": "German", "fre": "French",
+    "fra": "French", "spa": "Spanish", "ita": "Italian", "jpn": "Japanese",
+    "chi": "Chinese", "zho": "Chinese", "kor": "Korean", "rus": "Russian",
+    "por": "Portuguese", "dut": "Dutch", "nld": "Dutch", "swe": "Swedish",
+    "nor": "Norwegian", "dan": "Danish", "fin": "Finnish", "pol": "Polish",
+    "tur": "Turkish", "ara": "Arabic", "heb": "Hebrew", "hin": "Hindi",
+    "tha": "Thai", "vie": "Vietnamese", "cze": "Czech", "ces": "Czech",
+    "hun": "Hungarian", "gre": "Greek", "ell": "Greek", "rum": "Romanian",
+    "ron": "Romanian", "bul": "Bulgarian", "hrv": "Croatian", "srp": "Serbian",
+    "slo": "Slovak", "slk": "Slovak", "slv": "Slovenian", "ukr": "Ukrainian",
+    "und": "Undetermined",
+}
+
+
+def _language_label(code: str) -> str:
+    code = (code or "und").lower()
+    name = _LANGUAGE_NAMES.get(code)
+    return f"{name} ({code})" if name else code
 
 # Name of the local IPC server used to detect an already-running instance
 # and ask it to show itself, instead of starting a second copy that could
@@ -81,16 +106,24 @@ class MainWindow(QWidget):
         self._start_time: float | None = None
         self._watch_processed_count = 0
         self.tray_icon: QSystemTrayIcon | None = None
+        self.language_scan_worker: LanguageScanWorker | None = None
+        # Subtitle languages the user has checked, persisted across
+        # sessions even before the checklist widget has been populated by
+        # a scan in the current session (e.g. a --minimized autostart run).
+        self._saved_subtitle_languages: set = set(DEFAULT_SUBTITLE_LANGUAGES)
+        self._lang_checkboxes: dict[str, QCheckBox] = {}
 
         # Multi-folder manual-run queue state
         self._run_queue: list[Path] = []
         self._run_totals = {
             "total_scanned": 0, "cleaned": 0, "skipped_single_track": 0,
             "no_english": 0, "errors": 0, "total_removed_tracks": 0,
+            "total_removed_subtitle_tracks": 0,
             "total_bytes_saved": 0, "elapsed_seconds": 0.0,
         }
         self._run_folder_index = 0
         self._run_folder_count = 0
+        self._run_was_preview = False
 
         self._deps_ok = False
         self._build_ui()
@@ -152,6 +185,15 @@ class MainWindow(QWidget):
         action_row.addWidget(self.cancel_btn)
         layout.addLayout(action_row)
 
+        preview_row = QHBoxLayout()
+        self.preview_check = QCheckBox(
+            "Preview Only — show what would happen, don't modify any files"
+        )
+        self.preview_check.toggled.connect(self._save_preview_setting)
+        preview_row.addWidget(self.preview_check)
+        preview_row.addStretch()
+        layout.addLayout(preview_row)
+
         # Watch mode row
         watch_row = QHBoxLayout()
         self.watch_btn = QPushButton("Start Watching All Folders")
@@ -180,6 +222,49 @@ class MainWindow(QWidget):
         startup_row.addWidget(self.autostart_check)
         startup_row.addStretch()
         layout.addLayout(startup_row)
+
+        # Audio & subtitle options
+        options_box = QGroupBox("Audio && Subtitle Options")
+        options_layout = QVBoxLayout()
+
+        self.keep_commentary_check = QCheckBox(
+            "Keep commentary tracks (default: removed like any other extra audio track)"
+        )
+        self.keep_commentary_check.setChecked(DEFAULT_KEEP_COMMENTARY)
+        self.keep_commentary_check.toggled.connect(self._save_audio_subtitle_options)
+        options_layout.addWidget(self.keep_commentary_check)
+
+        self.subtitle_filter_check = QCheckBox(
+            "Also clean subtitle tracks (keep only checked languages below, plus any Forced tracks)"
+        )
+        self.subtitle_filter_check.setChecked(DEFAULT_SUBTITLE_FILTER_ENABLED)
+        self.subtitle_filter_check.toggled.connect(self._on_toggle_subtitle_filter)
+        options_layout.addWidget(self.subtitle_filter_check)
+
+        scan_row = QHBoxLayout()
+        self.scan_languages_btn = QPushButton("Scan Folders for Subtitle Languages…")
+        self.scan_languages_btn.clicked.connect(self._on_scan_languages)
+        scan_row.addWidget(self.scan_languages_btn)
+        scan_row.addStretch()
+        options_layout.addLayout(scan_row)
+
+        self.lang_scroll = QScrollArea()
+        self.lang_scroll.setWidgetResizable(True)
+        self.lang_scroll.setMaximumHeight(110)
+        self.lang_checklist_widget = QWidget()
+        self.lang_checklist_layout = QVBoxLayout(self.lang_checklist_widget)
+        self.lang_checklist_placeholder = QLabel(
+            "Scan folders above to see which subtitle languages are actually present."
+        )
+        self.lang_checklist_placeholder.setStyleSheet("color: #666;")
+        self.lang_checklist_layout.addWidget(self.lang_checklist_placeholder)
+        self.lang_checklist_layout.addStretch()
+        self.lang_scroll.setWidget(self.lang_checklist_widget)
+        options_layout.addWidget(self.lang_scroll)
+
+        options_box.setLayout(options_layout)
+        layout.addWidget(options_box)
+        self._update_subtitle_controls_enabled()
 
         # Progress group
         progress_box = QGroupBox("Progress")
@@ -272,6 +357,27 @@ class MainWindow(QWidget):
             self.settle_spin.setValue(int(settle))
             self.settle_spin.blockSignals(False)
 
+        keep_commentary = self.settings.value("keep_commentary", DEFAULT_KEEP_COMMENTARY, type=bool)
+        self.keep_commentary_check.blockSignals(True)
+        self.keep_commentary_check.setChecked(keep_commentary)
+        self.keep_commentary_check.blockSignals(False)
+
+        subtitle_filter = self.settings.value("subtitle_filter_enabled", DEFAULT_SUBTITLE_FILTER_ENABLED, type=bool)
+        self.subtitle_filter_check.blockSignals(True)
+        self.subtitle_filter_check.setChecked(subtitle_filter)
+        self.subtitle_filter_check.blockSignals(False)
+
+        saved_langs = self.settings.value("subtitle_languages", list(DEFAULT_SUBTITLE_LANGUAGES))
+        if isinstance(saved_langs, str):  # QSettings can collapse a 1-item list to a bare string
+            saved_langs = [saved_langs]
+        self._saved_subtitle_languages = {str(l).lower() for l in saved_langs}
+
+        preview = self.settings.value("preview_only", False, type=bool)
+        self.preview_check.blockSignals(True)
+        self.preview_check.setChecked(preview)
+        self.preview_check.blockSignals(False)
+
+        self._update_subtitle_controls_enabled()
         self._update_action_buttons_enabled()
 
     def _save_folders(self):
@@ -279,6 +385,77 @@ class MainWindow(QWidget):
 
     def _save_settle(self):
         self.settings.setValue("settle_seconds", self.settle_spin.value())
+
+    def _save_preview_setting(self):
+        self.settings.setValue("preview_only", self.preview_check.isChecked())
+
+    def _save_audio_subtitle_options(self):
+        self.settings.setValue("keep_commentary", self.keep_commentary_check.isChecked())
+        self.settings.setValue("subtitle_filter_enabled", self.subtitle_filter_check.isChecked())
+
+    def _update_subtitle_controls_enabled(self):
+        enabled = self.subtitle_filter_check.isChecked()
+        self.scan_languages_btn.setEnabled(enabled)
+        self.lang_scroll.setEnabled(enabled)
+
+    def _on_toggle_subtitle_filter(self, checked: bool):
+        self._update_subtitle_controls_enabled()
+        self._save_audio_subtitle_options()
+
+    def _get_selected_subtitle_languages(self) -> set:
+        if self._lang_checkboxes:
+            return {lang for lang, cb in self._lang_checkboxes.items() if cb.isChecked()}
+        # Checklist hasn't been populated this session (e.g. a --minimized
+        # autostart launch) -- fall back to whatever was saved last time.
+        return set(self._saved_subtitle_languages)
+
+    def _save_subtitle_language_selection(self):
+        selected = {lang for lang, cb in self._lang_checkboxes.items() if cb.isChecked()}
+        self._saved_subtitle_languages = selected
+        self.settings.setValue("subtitle_languages", sorted(selected))
+
+    # ---------------------------------------------------------- subtitle language scan
+    def _on_scan_languages(self):
+        if not self.selected_roots:
+            QMessageBox.information(self, APP_NAME, "Add a folder first.")
+            return
+        self.scan_languages_btn.setEnabled(False)
+        self.scan_languages_btn.setText("Scanning…")
+        self._log("Scanning for subtitle languages across all folders…")
+
+        self.language_scan_worker = LanguageScanWorker(self.selected_roots)
+        self.language_scan_worker.finished_ok.connect(self._on_languages_scanned)
+        self.language_scan_worker.failed.connect(self._on_languages_scan_failed)
+        self.language_scan_worker.start()
+
+    def _on_languages_scanned(self, languages: set):
+        while self.lang_checklist_layout.count():
+            item = self.lang_checklist_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        self._lang_checkboxes = {}
+        if not languages:
+            self.lang_checklist_layout.addWidget(QLabel("No subtitle tracks found in these folders."))
+        else:
+            for code in sorted(languages, key=_language_label):
+                cb = QCheckBox(_language_label(code))
+                cb.setChecked(code in self._saved_subtitle_languages)
+                cb.toggled.connect(self._save_subtitle_language_selection)
+                self.lang_checklist_layout.addWidget(cb)
+                self._lang_checkboxes[code] = cb
+        self.lang_checklist_layout.addStretch()
+
+        self._save_subtitle_language_selection()
+        self.scan_languages_btn.setEnabled(True)
+        self.scan_languages_btn.setText("Scan Folders for Subtitle Languages…")
+        self._log(f"Found {len(languages)} subtitle language(s).")
+
+    def _on_languages_scan_failed(self, message: str):
+        self.scan_languages_btn.setEnabled(True)
+        self.scan_languages_btn.setText("Scan Folders for Subtitle Languages…")
+        self._log(f"Subtitle language scan failed: {message}")
 
     # ---------------------------------------------------------- autostart
     def _on_toggle_autostart(self, checked: bool):
@@ -434,8 +611,12 @@ class MainWindow(QWidget):
         self._run_queue = list(self.selected_roots)
         self._run_folder_count = len(self._run_queue)
         self._run_folder_index = 0
+        self._run_was_preview = self.preview_check.isChecked()
         for key in self._run_totals:
             self._run_totals[key] = 0 if key != "elapsed_seconds" else 0.0
+
+        if self._run_was_preview:
+            self._log("=== PREVIEW MODE — no files will be modified ===")
 
         self._run_next_folder_in_queue()
 
@@ -454,7 +635,13 @@ class MainWindow(QWidget):
         )
         self._log(f"--- Starting folder {self._run_folder_index}/{self._run_folder_count}: {root} ---")
 
-        self.worker = CleanerWorker(root)
+        self.worker = CleanerWorker(
+            root,
+            keep_commentary=self.keep_commentary_check.isChecked(),
+            subtitle_filter_enabled=self.subtitle_filter_check.isChecked(),
+            subtitle_languages=self._get_selected_subtitle_languages(),
+            preview_only=self.preview_check.isChecked(),
+        )
         self.worker.progress.connect(self._on_progress)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.finished_ok.connect(self._on_folder_finished)
@@ -477,19 +664,32 @@ class MainWindow(QWidget):
         self.progress_bar.setValue(100)
         self.eta_label.setText("Done")
         t = self._run_totals
-        saved_mb = t["total_bytes_saved"] / 1_048_576
-        self.summary_label.setText(
-            "<b>Completion Summary</b> (all folders)<br>"
-            f"Folders processed: {self._run_folder_count}<br>"
-            f"Total files scanned: {t['total_scanned']}<br>"
-            f"Files cleaned: {t['cleaned']}<br>"
-            f"Files skipped (already single English track): {t['skipped_single_track']}<br>"
-            f"Files with no English audio: {t['no_english']}<br>"
-            f"Errors: {t['errors']}<br>"
-            f"Audio tracks removed: {t['total_removed_tracks']}<br>"
-            f"Total processing time: {_format_seconds(t['elapsed_seconds'])}<br>"
-            f"Estimated disk space recovered: {saved_mb:.1f} MB"
-        )
+        is_preview = getattr(self, "_run_was_preview", False)
+
+        header = "<b>Preview Summary</b> (no files were modified)" if is_preview else "<b>Completion Summary</b> (all folders)"
+        cleaned_label = "Files that would be cleaned" if is_preview else "Files cleaned"
+        audio_label = "Audio tracks that would be removed" if is_preview else "Audio tracks removed"
+        subtitle_label = "Subtitle tracks that would be removed" if is_preview else "Subtitle tracks removed"
+
+        lines = [
+            header,
+            f"Folders processed: {self._run_folder_count}",
+            f"Total files scanned: {t['total_scanned']}",
+            f"{cleaned_label}: {t['cleaned']}",
+            f"Files skipped (already single English track): {t['skipped_single_track']}",
+            f"Files with no English audio: {t['no_english']}",
+            f"Errors: {t['errors']}",
+            f"{audio_label}: {t['total_removed_tracks']}",
+            f"{subtitle_label}: {t['total_removed_subtitle_tracks']}",
+            f"Total processing time: {_format_seconds(t['elapsed_seconds'])}",
+        ]
+        if is_preview:
+            lines.append("Disk space recovered: not calculated in preview mode — run for real to see actual savings")
+        else:
+            saved_mb = t["total_bytes_saved"] / 1_048_576
+            lines.append(f"Estimated disk space recovered: {saved_mb:.1f} MB")
+
+        self.summary_label.setText("<br>".join(lines))
 
     # ---------------------------------------------------------- watch mode (one worker per folder)
     def _on_toggle_watch(self, checked: bool):
@@ -522,7 +722,12 @@ class MainWindow(QWidget):
 
         self.watch_workers = []
         for root in self.selected_roots:
-            w = WatchWorker(root, self.settle_spin.value())
+            w = WatchWorker(
+                root, self.settle_spin.value(),
+                keep_commentary=self.keep_commentary_check.isChecked(),
+                subtitle_filter_enabled=self.subtitle_filter_check.isChecked(),
+                subtitle_languages=self._get_selected_subtitle_languages(),
+            )
             w.file_done.connect(self._on_watch_file_done)
             w.heartbeat.connect(self._on_watch_heartbeat)
             w.failed.connect(self._on_watch_failed)
@@ -629,7 +834,16 @@ def _format_result_line(result) -> str:
     name = Path(result.path).name
     if result.status == "cleaned":
         codec = CODEC_LABELS.get(result.kept_codec, result.kept_codec)
-        return f"✔ {name} — kept {codec}, removed {result.removed_track_count} track(s)"
+        if result.preview:
+            line = f"👁 {name} — would keep {codec}, would remove {result.removed_track_count} audio track(s)"
+            if result.removed_subtitle_count:
+                line += f", {result.removed_subtitle_count} subtitle track(s)"
+            line += " (preview only)"
+            return line
+        line = f"✔ {name} — kept {codec}, removed {result.removed_track_count} audio track(s)"
+        if result.removed_subtitle_count:
+            line += f", {result.removed_subtitle_count} subtitle track(s)"
+        return line
     if result.status == "skipped_single_track":
         return f"– {name} — already clean"
     if result.status == "no_english":

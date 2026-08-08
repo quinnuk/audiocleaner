@@ -27,6 +27,7 @@ class ScanSummary:
     no_english: int = 0
     errors: int = 0
     total_removed_tracks: int = 0
+    total_removed_subtitle_tracks: int = 0
     total_bytes_saved: int = 0
     elapsed_seconds: float = 0.0
     results: list = field(default_factory=list)  # list[ProcessResult]
@@ -45,6 +46,10 @@ def run_pipeline(
     on_file_done: Optional[Callable[[ProcessResult], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     probe_workers: int = 4,
+    keep_commentary: bool = False,
+    subtitle_filter_enabled: bool = False,
+    subtitle_languages: Optional[set] = None,
+    preview_only: bool = False,
 ) -> ScanSummary:
     """
     on_progress(files_done, files_total, current_filename, phase) is called
@@ -85,13 +90,20 @@ def run_pipeline(
         if on_progress:
             on_progress(i, total, f.name, "processing")
 
-        result = process_file(f, cache=cache)
+        result = process_file(
+            f, cache=cache,
+            keep_commentary=keep_commentary,
+            subtitle_filter_enabled=subtitle_filter_enabled,
+            subtitle_languages=subtitle_languages,
+            preview_only=preview_only,
+        )
         summary.results.append(result)
         summary.total_scanned += 1
 
         if result.status == "cleaned":
             summary.cleaned += 1
             summary.total_removed_tracks += result.removed_track_count
+            summary.total_removed_subtitle_tracks += result.removed_subtitle_count
             summary.total_bytes_saved += result.bytes_saved
         elif result.status == "skipped_single_track":
             summary.skipped_single_track += 1
@@ -106,3 +118,38 @@ def run_pipeline(
     cache.save()
     summary.elapsed_seconds = time.time() - start
     return summary
+
+
+def scan_subtitle_languages(
+    root: Path,
+    on_progress: Optional[Callable[[int, int, str, str], None]] = None,
+    probe_workers: int = 4,
+) -> set:
+    """
+    Quick pass to discover which subtitle languages exist across every MKV
+    file under root, used to populate the GUI's language checklist. Shares
+    the same probe cache as run_pipeline, so this is near-instant on a
+    library that's already been scanned before.
+    """
+    files = find_mkv_files(root)
+    if not files:
+        return set()
+
+    cache = ProbeCache(root / CACHE_FILENAME)
+    langs: set = set()
+    done = 0
+    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
+        futures = {pool.submit(probe_file, f, cache): f for f in files}
+        for future in as_completed(futures):
+            f = futures[future]
+            done += 1
+            if on_progress:
+                on_progress(done, len(files), f.name, "scanning")
+            try:
+                result = future.result()
+            except Exception:
+                continue
+            for t in result.subtitle_tracks:
+                langs.add(t.language.lower())
+    cache.save()
+    return langs
