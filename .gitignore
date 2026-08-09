@@ -1,13 +1,22 @@
-Python
-pycache/ *.pyc *.pyo
-PyInstaller build output
-build/ dist/ *.exe
-Local watch-mode cache & logs created at runtime in watched folders
-.audiocleaner_cache.json audiocleaner_log.txt
-Editor/OS cruft
-.vscode/ .idea/ Thumbs.db
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
 
-AudioCleaner.exe
+# PyInstaller build output
 build/
 dist/
+*.exe
+
+# Local watch-mode cache & logs created at runtime in watched folders
+.audiocleaner_cache.json
+audiocleaner_log.txt
+
+# Editor/OS cruft
+.vscode/
+.idea/
+Thumbs.db
+
+# Stray files
+*.ODT
