@@ -9,7 +9,10 @@ def _probe(path, cache=None):
         error=None,
         path=str(path),
         size=path.stat().st_size,
-        audio_tracks=[SimpleNamespace(track_id=1, language="eng", codec_id="A_AC3", channels=6)],
+        audio_tracks=[
+            SimpleNamespace(track_id=1, language="eng", codec_id="A_AC3", channels=6),
+            SimpleNamespace(track_id=2, language="eng", codec_id="A_AAC", channels=2),
+        ],
         subtitle_tracks=[],
         video_tracks=[SimpleNamespace(track_id=0, codec_id="V_MPEG4/ISO/AVC", width=1920, height=1080)],
         chapter_count=0,
@@ -57,7 +60,6 @@ def test_failed_final_verification_restores_original(monkeypatch, tmp_path):
         stderr = ""
 
     def fake_run(cmd, **kwargs):
-        # mkvmerge output path follows -o.
         out = Path(cmd[cmd.index("-o") + 1])
         out.write_bytes(b"cleaned")
         return Proc()
