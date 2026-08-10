@@ -36,7 +36,6 @@ class BeforeAfterInfo:
 @dataclass
 class ProcessResult:
     path: str
-    # "cleaned" | "skipped_single_track" | "no_english" | "unknown_codec" | "error"
     status: str
     kept_codec: Optional[str] = None
     removed_track_count: int = 0
@@ -101,9 +100,10 @@ def process_file(
         subtitle_ids_to_keep = [t.track_id for t in kept_subs]
         subtitle_unchanged = {t.track_id for t in result.subtitle_tracks} == set(subtitle_ids_to_keep)
         subtitle_decisions = explain_subtitle_selection(result, subtitle_languages)
+    kept_sub_ids = set(subtitle_ids_to_keep or [])
     expected_subtitle_tracks = (
         list(result.subtitle_tracks) if subtitle_ids_to_keep is None
-        else [t for t in result.subtitle_tracks if t.track_id in set(subtitle_ids_to_keep)]
+        else [t for t in result.subtitle_tracks if t.track_id in kept_sub_ids]
     )
 
     before = BeforeAfterInfo(
@@ -153,9 +153,6 @@ def process_file(
 
     mkvmerge_path = find_tool("mkvmerge")
     if mkvmerge_path is None:
-        # A previous negative lookup may have been cached by find_tool().
-        # Recheck once so installing/configuring the dependency while the
-        # application is running can recover without a restart.
         try:
             find_tool.cache_clear()
         except AttributeError:
@@ -224,10 +221,6 @@ def process_file(
     backup_path = None
     if max_safety_mode:
         backup_path = path.with_name(path.stem + ".ac_backup" + path.suffix)
-        # Never destroy an existing recovery point. A persistent backup is
-        # specifically valuable because a later run might fail; overwriting
-        # it before the new operation has completed would defeat that safety
-        # guarantee. The user can remove the old backup explicitly.
         if backup_path.exists():
             _cleanup_temp(temp_path)
             return ProcessResult(
@@ -253,11 +246,6 @@ def process_file(
         return ProcessResult(path=str(path), status="error",
                               message=f"Could not replace original file: {e}")
 
-    # Re-run the exact same validation against the file now occupying the
-    # original path. os.replace() succeeding is not enough: this verifies the
-    # actual final artifact, not merely the temporary file we intended to put
-    # there. source_size is passed explicitly because source.path now points
-    # at the replaced file and therefore no longer represents the old size.
     final_ok, final_msg = _verify_output(
         path, result,
         expected_audio_tracks=expected_audio_tracks,
@@ -274,7 +262,8 @@ def process_file(
                 return ProcessResult(
                     path=str(path), status="error", restored_from_backup=True,
                     message="Final verification failed after replacement; "
-                            "original restored from Maximum Safety Mode backup: " + final_msg,
+                            "original restored from Maximum Safety Mode backup. "
+                            f"Verification detail: {final_msg}",
                 )
             except OSError as e:
                 return ProcessResult(
@@ -291,11 +280,12 @@ def process_file(
                     f"Verification detail: {final_msg}",
         )
 
+    final_check = probe_file(path, cache=None)
+    if cache is not None:
+        cache.put(final_check)
+
     if backup_path is not None and backup_path.exists() and not persistent_backup:
         _cleanup_temp(backup_path)
-
-    if cache is not None:
-        cache.put(final_check := probe_file(path, cache=None))
 
     after = BeforeAfterInfo(
         audio_tracks=len(final_check.audio_tracks),
@@ -355,13 +345,7 @@ def _verify_output(
     subtitles_untouched: bool,
     source_size: int,
 ) -> tuple[bool, str]:
-    """Validate the exact artifact that is about to be or has been installed.
-
-    Expected tracks are compared as complete per-track signatures rather than
-    independent property sets. This prevents a false positive where, for
-    example, one output track supplies the expected codec while a different
-    track supplies the expected channel count.
-    """
+    """Validate the exact artifact that is about to be or has been installed."""
     try:
         check = probe_file(output_path, cache=None)
     except (ExternalToolError, OSError) as e:
@@ -392,10 +376,7 @@ def _verify_output(
     if actual_audio != expected_audio:
         return False, f"audio track identities/properties changed unexpectedly: expected {sorted(expected_audio.elements())}, found {sorted(actual_audio.elements())}"
 
-    if subtitles_untouched:
-        expected_subtitles = source.subtitle_tracks
-    else:
-        expected_subtitles = expected_subtitle_tracks
+    expected_subtitles = source.subtitle_tracks if subtitles_untouched else expected_subtitle_tracks
     if len(check.subtitle_tracks) != len(expected_subtitles):
         return False, f"expected {len(expected_subtitles)} subtitle track(s), found {len(check.subtitle_tracks)}"
     if Counter(_subtitle_signature(t) for t in check.subtitle_tracks) != Counter(_subtitle_signature(t) for t in expected_subtitles):
