@@ -1,13 +1,7 @@
 """
 Continuous watch mode: polls a folder tree for new or still-copying MKV
 files and only hands a file to the processor once its size has stopped
-changing for `settle_seconds` -- this is what keeps it from grabbing a
-file while Radarr/Sonarr (or any download client) is still moving it into
-place.
-
-State is kept in memory only (per watch session); restarting the watcher
-re-evaluates the whole tree, which is cheap because probe.ProbeCache
-still short-circuits anything that hasn't changed on disk.
+changing for `settle_seconds`.
 """
 
 import time
@@ -21,29 +15,44 @@ from .processor import process_file, ProcessResult
 from .history import ProcessingHistory
 
 
+@dataclass(frozen=True)
+class _FileIdentity:
+    size: int
+    mtime_ns: int
+
+
 @dataclass
 class _Sighting:
-    size: int
+    identity: _FileIdentity
     last_size_change: float
 
 
 class WatchState:
-    """Tracks per-file size-stability history across polling passes."""
+    """Tracks per-file stability and successful processing across polls."""
 
     def __init__(self):
         self._sightings: dict[str, _Sighting] = {}
-        self._processed: set[str] = set()
+        # Store the identity, not merely the path. If a processed file is
+        # deleted and a different file is later moved into the same path, it
+        # must be eligible for processing again.
+        self._processed: dict[str, _FileIdentity] = {}
+
+    def _identity(self, path: Path) -> Optional[_FileIdentity]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return _FileIdentity(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
 
     def observe(self, path: Path) -> Optional[_Sighting]:
-        try:
-            size = path.stat().st_size
-        except OSError:
+        identity = self._identity(path)
+        if identity is None:
             return None
         key = str(path)
         now = time.time()
         prev = self._sightings.get(key)
-        if prev is None or prev.size != size:
-            sighting = _Sighting(size=size, last_size_change=now)
+        if prev is None or prev.identity != identity:
+            sighting = _Sighting(identity=identity, last_size_change=now)
         else:
             sighting = prev
         self._sightings[key] = sighting
@@ -56,11 +65,22 @@ class WatchState:
         return (time.time() - sighting.last_size_change) >= settle_seconds
 
     def mark_processed(self, path: Path):
-        self._processed.add(str(path))
+        identity = self._identity(path)
+        if identity is not None:
+            self._processed[str(path)] = identity
         self._sightings.pop(str(path), None)
 
+    def mark_retryable(self, path: Path):
+        """Leave the current file eligible for a later poll after an error."""
+        self._processed.pop(str(path), None)
+        # Keep the sighting so a transient error does not force another full
+        # settle interval when the file itself has not changed.
+
     def already_processed(self, path: Path) -> bool:
-        return str(path) in self._processed
+        identity = self._identity(path)
+        if identity is None:
+            return False
+        return self._processed.get(str(path)) == identity
 
 
 def watch_iteration(
@@ -75,11 +95,7 @@ def watch_iteration(
     persistent_backup: bool = False,
     history: Optional[ProcessingHistory] = None,
 ) -> list[ProcessResult]:
-    """
-    One polling pass over the folder tree. Returns a ProcessResult for
-    every file that was stable-and-not-yet-processed this pass (usually
-    zero, since most passes find nothing new).
-    """
+    """One polling pass over the folder tree."""
     results = []
     for path in sorted(
         p for p in root.rglob("*")
@@ -90,10 +106,10 @@ def watch_iteration(
 
         sighting = state.observe(path)
         if sighting is None:
-            continue  # unreadable / vanished mid-poll, try again next pass
+            continue
 
         if not state.is_settled(path, settle_seconds):
-            continue  # still copying (or just arrived) -- wait
+            continue
 
         result = process_file(
             path, cache=cache,
@@ -103,15 +119,21 @@ def watch_iteration(
             max_safety_mode=max_safety_mode,
             persistent_backup=persistent_backup,
         )
-        # Mark processed regardless of outcome (including errors) so a
-        # broken file doesn't get retried forever on every poll.
-        state.mark_processed(path)
         results.append(result)
+
+        # Only successful/non-error outcomes become processed. A transient
+        # MediaInfo/mkvmerge failure, a locked file, or a temporary I/O issue
+        # should be retried instead of being permanently suppressed for the
+        # rest of the watch session.
+        if result.status == "error":
+            state.mark_retryable(path)
+        else:
+            state.mark_processed(path)
 
         if history is not None:
             try:
                 history.record(str(root), result)
             except Exception:
-                pass  # never let a history-logging failure disrupt watching
+                pass
 
     return results
