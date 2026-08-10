@@ -15,6 +15,9 @@
   <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/license-BSD--2--Clause-green?style=for-the-badge" alt="License">
+  <a href="https://github.com/quinnuk/audiocleaner/actions/workflows/tests.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/quinnuk/audiocleaner/tests.yml?branch=main&style=for-the-badge&label=tests" alt="Tests">
+  </a>
 </p>
 <p align="center">
   <a href="https://buymeacoffee.com/quinnuk" target="_blank">
@@ -26,6 +29,26 @@
 <p align="center">
   <img src="screenshot.jpg" alt="AudioCleaner application screenshot" width="900">
 </p>
+
+---
+
+## 📑 Contents
+
+- [What is AudioCleaner?](#-what-is-audiocleaner)
+- [Safe by Design](#️-safe-by-design)
+- [Key Features](#-key-features)
+- [Getting Started](#-getting-started)
+- [How It Works](#️-how-it-works)
+- [Subtitle Language Filtering](#️-subtitle-language-filtering)
+- [Watch Mode, System Tray & Autostart](#-watch-mode-system-tray--autostart)
+- [Smart Caching](#-smart-caching)
+- [Codec Detection Caveat](#️-codec-detection-caveat)
+- [Building a Standalone .exe](#-building-a-standalone-exe)
+- [Project Structure](#-project-structure)
+- [External Dependencies](#-external-dependencies)
+- [Development & Testing](#-development--testing)
+- [Support This Project](#-support-this-project)
+- [License](#-license)
 
 ---
 
@@ -73,11 +96,17 @@ Original MKV
      ▼
  Select best English track
      │
+     ├─────────────── ❓ Unrecognised codec
+     │                    │
+     │                    ▼
+     │              Skip file, leave untouched
+     │
      ▼
  Create temporary MKV (name.ac_tmp.mkv)
      │
      ▼
- Verify result
+ Verify result (video, audio, subtitles, chapters,
+ attachments, duration, output size)
      │
      ├─────────────── ❌ Failed
      │                    │
@@ -89,11 +118,23 @@ Original MKV
                           │
                           ▼
               Atomically replace original (os.replace)
+                          │
+                          ▼
+              Re-probe the replaced file to confirm
+              the swap actually landed correctly
 ```
 
-The original file is **never replaced until the new file has been successfully created and verified**.
+The original file is **never replaced until the new file has been successfully created and verified**, and the replacement itself is re-checked afterwards rather than just assumed to have worked.
 
-If anything fails, the original remains untouched.
+If anything fails, the original remains untouched. If a file's audio codec can't be confidently classified, it's skipped rather than guessed at.
+
+### Maximum Safety Mode
+
+For an extra layer of protection, **Maximum Safety Mode** keeps a full backup copy of the original file until *after* the post-replacement check has confirmed the swap succeeded. If that final check ever fails, the backup is used to automatically restore the original — no manual recovery needed.
+
+It's off by default because the standard temp-file → verify → replace flow is already safe for normal use, and Maximum Safety Mode costs extra disk space and I/O while it runs. There's also an option to keep the backup even after a successful run, for anyone who wants a persistent safety net rather than a one-off check.
+
+Enable it from **Safety Options** in the app.
 
 ---
 
@@ -111,6 +152,11 @@ If anything fails, the original remains untouched.
 | 🖥️ | **System Tray** | Runs quietly in the background |
 | 🚀 | **Windows Startup** | Automatically starts and resumes watching at login |
 | 📋 | **Detailed Logging** | Records every processing decision |
+| 🔒 | **Maximum Safety Mode** | Keeps a backup until the replaced file is re-verified, and auto-restores it if that check fails |
+| 🕵️ | **Processing History** | A searchable, persistent record of what was done to every file, across every folder and run |
+| 🎙️ | **Commentary Track Control** | Choose whether commentary tracks are removed (default) or kept alongside the main audio track |
+| 💬 | **Subtitle Language Filtering** | Optionally clean subtitles too, keeping only the languages you choose plus any Forced tracks |
+| ❓ | **Unknown-Codec Safety** | Files with an audio codec AudioCleaner can't confidently identify are skipped, never guessed at |
 
 ---
 
@@ -221,7 +267,9 @@ AAC
 MP3
 ```
 
-The highest-ranked English track is selected.
+The highest-ranked English track is selected. If a file's audio codec can't be confidently identified, it's marked **unknown format** and skipped rather than guessed at.
+
+By default, commentary tracks are treated like any other extra audio track and removed. Ticking **Keep commentary tracks** in Audio & Subtitle Options preserves them alongside the main track instead.
 
 ### 4. 🔨 Process
 
@@ -233,27 +281,38 @@ Everything else is remuxed to a temporary file:
 name.ac_tmp.mkv
 ```
 
-The temporary file contains only the chosen audio track while preserving the video, subtitles, chapters, fonts, attachments, and metadata (mkvmerge's default behaviour).
+The temporary file contains only the chosen audio track while preserving the video, chapters, fonts, attachments, and metadata (mkvmerge's default behaviour). Subtitles are preserved as-is unless subtitle filtering is enabled (see below).
 
 **Nothing is re-encoded.**
 
 ### 5. ✅ Verify & Replace
 
-The temporary file is probed to confirm that it contains exactly one audio track in the expected language.
+The temporary file is probed to confirm it matches expectations — video codec and resolution, the selected audio codec and channel layout, the subtitle language set, chapter and attachment counts, duration, and output size are all checked, not just track counts.
 
-Only after verification succeeds does AudioCleaner atomically replace the original (`os.replace`).
+Only after verification succeeds does AudioCleaner atomically replace the original (`os.replace`). It then re-probes the replaced file to confirm the swap itself landed correctly, rather than assuming `os.replace()` succeeding means the job is done.
 
-If verification fails, the temporary file is discarded and the original is never touched.
+If verification fails at any stage, the temporary file is discarded and the original is never touched. With **Maximum Safety Mode** enabled, a full backup is also kept until this final check passes, and is used to automatically restore the original if it doesn't.
 
-### 6. 📋 Log
+### 6. 📋 Log & History
 
-Every decision is appended to:
+Every decision is appended to a per-folder log:
 
 ```text
 audiocleaner_log.txt
 ```
 
 The log can be opened directly from the application using **Open Log**.
+
+Separately, every file AudioCleaner has ever looked at — across every folder and every run — is recorded to a central **Processing History**, viewable from the app with the **Processing History…** button. This makes it easy to answer "what did AudioCleaner do to `Dune.mkv` last week?" without hunting through individual log files.
+
+---
+
+## 🎚️ Subtitle Language Filtering
+
+Subtitles are left alone by default. Ticking **Also clean subtitle tracks** in Audio & Subtitle Options lets AudioCleaner remove subtitle tracks too, keeping only the languages you select.
+
+- Use **Scan Folders for Subtitle Languages…** to detect which languages are actually present across your library before choosing which to keep.
+- **Forced** subtitle tracks are always kept, regardless of language, since they're typically needed for foreign-language dialogue in an otherwise-English film.
 
 ---
 
@@ -354,6 +413,8 @@ AudioCleaner caches probed metadata in:
 
 This allows unchanged files to be skipped on subsequent scans, making repeated scans of an established library much faster.
 
+Cache entries are tied to the version of AudioCleaner's scanning and rules logic that produced them. If an update changes how files are probed or how tracks are selected, older cache entries are automatically treated as stale and re-probed — so an update can never silently keep applying decisions made under the old logic. Use **Rebuild Cache…** in Safety Options at any time to force a full re-analysis of a folder without modifying any media file.
+
 ---
 
 ## ⚠️ Codec Detection Caveat
@@ -390,16 +451,17 @@ If you'd rather build AudioCleaner yourself instead of using the release downloa
 
 ```text
 audiocleaner/
-├── config.py       # Codec priority list & constants
-├── probe.py        # mkvmerge/MediaInfo wrappers & on-disk cache
+├── config.py       # Codec priority list, feature defaults & constants
+├── probe.py        # mkvmerge/MediaInfo wrappers & on-disk metadata cache
 ├── codec_rank.py   # Codec classification & best-track selection
-├── processor.py    # Safe remux → verify → atomic replace
-├── scanner.py       # Recursive file discovery & pipeline orchestration
-├── watcher.py       # Folder watching for continuous/background cleaning
-├── worker.py        # QThread wrapper to keep the GUI responsive
-├── gui.py           # PySide6 single-page interface
-├── autostart.py     # Windows "Start with Windows" support
-└── main.py          # Application entry point
+├── processor.py    # Safe remux → verify → atomic replace → re-verify
+├── history.py      # Persistent, cross-folder processing history (SQLite)
+├── scanner.py      # Recursive file discovery & pipeline orchestration
+├── watcher.py      # Folder watching for continuous/background cleaning
+├── worker.py       # QThread wrapper to keep the GUI responsive
+├── gui.py          # PySide6 single-page interface
+├── autostart.py    # Windows "Start with Windows" support
+└── main.py         # Application entry point
 ```
 
 ---
