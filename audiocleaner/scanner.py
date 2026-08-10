@@ -24,6 +24,7 @@ from .history import ProcessingHistory
 class ScanSummary:
     total_scanned: int = 0
     cleaned: int = 0
+    preview: int = 0
     skipped_single_track: int = 0
     no_english: int = 0
     unknown_codec: int = 0
@@ -32,7 +33,7 @@ class ScanSummary:
     total_removed_subtitle_tracks: int = 0
     total_bytes_saved: int = 0
     elapsed_seconds: float = 0.0
-    results: list = field(default_factory=list)  # list[ProcessResult]
+    results: list = field(default_factory=list)
 
 
 def find_mkv_files(root: Path) -> list[Path]:
@@ -56,12 +57,6 @@ def run_pipeline(
     persistent_backup: bool = False,
     history: Optional[ProcessingHistory] = None,
 ) -> ScanSummary:
-    """
-    on_progress(files_done, files_total, current_filename, phase) is called
-    repeatedly during both the scan and process phases.
-    on_file_done(ProcessResult) is called once per file after processing.
-    should_cancel() lets the caller request an early stop between files.
-    """
     start = time.time()
     summary = ScanSummary()
 
@@ -78,9 +73,8 @@ def run_pipeline(
         try:
             history = ProcessingHistory()
         except Exception:
-            history = None  # history is a convenience feature; never block a scan on it
+            history = None
 
-    # --- Phase 1: parallel metadata scan (populates cache) ---
     probed = 0
     with ThreadPoolExecutor(max_workers=probe_workers) as pool:
         futures = {pool.submit(probe_file, f, cache): f for f in files}
@@ -92,10 +86,9 @@ def run_pipeline(
             try:
                 future.result()
             except Exception:
-                pass  # errors surface again during processing phase
+                pass
     cache.save()
 
-    # --- Phase 2: sequential processing (remux is disk I/O heavy) ---
     for i, f in enumerate(files, start=1):
         if should_cancel and should_cancel():
             break
@@ -114,7 +107,9 @@ def run_pipeline(
         summary.results.append(result)
         summary.total_scanned += 1
 
-        if result.status == "cleaned":
+        if result.preview:
+            summary.preview += 1
+        elif result.status == "cleaned":
             summary.cleaned += 1
             summary.total_removed_tracks += result.removed_track_count
             summary.total_removed_subtitle_tracks += result.removed_subtitle_count
@@ -135,7 +130,7 @@ def run_pipeline(
             try:
                 history.record(str(root), result)
             except Exception:
-                pass  # never let a history-logging failure abort the run
+                pass
 
     cache.save()
     if owns_history and history is not None:
@@ -149,12 +144,7 @@ def scan_subtitle_languages(
     on_progress: Optional[Callable[[int, int, str, str], None]] = None,
     probe_workers: int = 4,
 ) -> set:
-    """
-    Quick pass to discover which subtitle languages exist across every MKV
-    file under root, used to populate the GUI's language checklist. Shares
-    the same probe cache as run_pipeline, so this is near-instant on a
-    library that's already been scanned before.
-    """
+    """Quick pass to discover subtitle languages across the MKV tree."""
     files = find_mkv_files(root)
     if not files:
         return set()
