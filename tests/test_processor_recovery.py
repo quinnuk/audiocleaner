@@ -31,10 +31,21 @@ def test_existing_backup_is_never_overwritten(monkeypatch, tmp_path):
     backup = tmp_path / "movie.ac_backup.mkv"
     backup.write_bytes(b"precious-recovery-copy")
 
+    class Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.write_bytes(b"cleaned")
+        return Proc()
+
     monkeypatch.setattr(processor, "probe_file", _probe)
     monkeypatch.setattr(processor, "select_audio_tracks_to_keep", _selection)
     monkeypatch.setattr(processor, "explain_audio_selection", lambda *args, **kwargs: [])
     monkeypatch.setattr(processor, "find_tool", lambda name: "mkvmerge")
+    monkeypatch.setattr(processor.subprocess, "run", fake_run)
     monkeypatch.setattr(processor, "_verify_output", lambda *args, **kwargs: (True, "ok"))
 
     result = processor.process_file(media, max_safety_mode=True)
