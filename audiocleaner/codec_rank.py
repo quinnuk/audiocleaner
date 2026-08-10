@@ -9,9 +9,10 @@ mkvmerge's codec_name string (recent MKVToolNix versions do append
 "Atmos" to TrueHD tracks it detects).
 """
 
+from dataclasses import dataclass
 from typing import Optional
 
-from .config import ENGLISH_LANG_CODES, CODEC_RANK
+from .config import ENGLISH_LANG_CODES, CODEC_RANK, CODEC_LABELS
 from .probe import AudioTrackInfo, FileProbeResult
 
 
@@ -124,6 +125,75 @@ def select_best_english_track(
     return best_track, best_key
 
 
+def track_label(track: AudioTrackInfo, codec_key: Optional[str] = None) -> str:
+    """Human-readable label for a track, e.g. 'English — Dolby TrueHD + Atmos 7.1'."""
+    key = codec_key or classify_audio_track(track)
+    lang = (track.language or "und").upper()
+    lang_names = {"ENG": "English", "FRE": "French", "FRA": "French", "GER": "German",
+                  "DEU": "German", "SPA": "Spanish", "UND": "Unknown language"}
+    lang_display = lang_names.get(lang, lang)
+    codec_display = CODEC_LABELS.get(key, key or "Unknown")
+    channel_display = f" {track.channels}ch" if track.channels else ""
+    return f"{lang_display} — {codec_display}{channel_display}"
+
+
+@dataclass
+class AudioTrackDecision:
+    track_id: int
+    kept: bool
+    label: str
+    reason: str
+    commentary: bool = False
+
+
+def explain_audio_selection(
+    result: FileProbeResult,
+    keep_commentary: bool = False,
+) -> list:
+    """Per-track KEEP/REMOVE decisions with a human-readable reason for
+    each, built from exactly the same selection this module's
+    select_audio_tracks_to_keep() would make -- so the explanation can
+    never drift out of sync with the actual behaviour (spec sec 15)."""
+    best_track, best_key, extra_tracks = select_audio_tracks_to_keep(
+        result, keep_commentary=keep_commentary
+    )
+    keep_ids = set()
+    if best_track is not None:
+        keep_ids.add(best_track.track_id)
+    keep_ids |= {t.track_id for t in extra_tracks}
+    best_label = track_label(best_track, best_key) if best_track is not None else None
+
+    decisions = []
+    for track in result.audio_tracks:
+        key = classify_audio_track(track)
+        label = track_label(track, key)
+        commentary = is_commentary(track)
+        kept = track.track_id in keep_ids
+
+        if kept:
+            if best_track is not None and track.track_id == best_track.track_id:
+                if commentary:
+                    reason = "Highest-ranked English audio track (only commentary tracks were available)."
+                else:
+                    reason = "Highest-ranked English non-commentary audio track."
+            else:
+                reason = "Commentary track kept in addition to the primary track because 'Keep commentary' is enabled."
+        else:
+            if not _is_english(track):
+                reason = f"Not an English track (language: {track.language or 'und'})."
+            elif commentary and not keep_commentary:
+                reason = "Commentary track removed ('Keep commentary' is off)."
+            elif best_label is not None:
+                reason = f"Lower priority than the selected {best_label} track."
+            else:
+                reason = "Not selected."
+
+        decisions.append(AudioTrackDecision(
+            track_id=track.track_id, kept=kept, label=label, reason=reason, commentary=commentary,
+        ))
+    return decisions
+
+
 def select_subtitle_tracks_to_keep(
     result: FileProbeResult,
     keep_languages,
@@ -137,6 +207,33 @@ def select_subtitle_tracks_to_keep(
     """
     langs = {l.lower() for l in (keep_languages or ())}
     return [t for t in result.subtitle_tracks if t.forced or t.language.lower() in langs]
+
+
+@dataclass
+class SubtitleTrackDecision:
+    track_id: int
+    kept: bool
+    label: str
+    reason: str
+
+
+def explain_subtitle_selection(result: FileProbeResult, keep_languages) -> list:
+    """Per-track KEEP/REMOVE explanation for subtitles, mirroring
+    explain_audio_selection (spec sec 15). Only meaningful when subtitle
+    filtering is enabled -- callers should not call this (and should just
+    report 'unchanged') when filtering is off."""
+    keep_ids = {t.track_id for t in select_subtitle_tracks_to_keep(result, keep_languages)}
+    decisions = []
+    for track in result.subtitle_tracks:
+        lang = (track.language or "und").upper()
+        label = f"{lang} subtitles" + (" (forced)" if track.forced else "")
+        kept = track.track_id in keep_ids
+        if kept:
+            reason = "Forced track, kept regardless of language filter." if track.forced else "Language selected to keep."
+        else:
+            reason = f"Language '{track.language}' not in the selected keep-list."
+        decisions.append(SubtitleTrackDecision(track_id=track.track_id, kept=kept, label=label, reason=reason))
+    return decisions
 
 
 def needs_processing(

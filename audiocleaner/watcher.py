@@ -18,6 +18,7 @@ from typing import Optional
 from .config import MKV_EXTENSIONS
 from .probe import ProbeCache
 from .processor import process_file, ProcessResult
+from .history import ProcessingHistory
 
 
 @dataclass
@@ -70,6 +71,9 @@ def watch_iteration(
     keep_commentary: bool = False,
     subtitle_filter_enabled: bool = False,
     subtitle_languages: Optional[set] = None,
+    max_safety_mode: bool = False,
+    persistent_backup: bool = False,
+    history: Optional[ProcessingHistory] = None,
 ) -> list[ProcessResult]:
     """
     One polling pass over the folder tree. Returns a ProcessResult for
@@ -96,10 +100,18 @@ def watch_iteration(
             keep_commentary=keep_commentary,
             subtitle_filter_enabled=subtitle_filter_enabled,
             subtitle_languages=subtitle_languages,
+            max_safety_mode=max_safety_mode,
+            persistent_backup=persistent_backup,
         )
         # Mark processed regardless of outcome (including errors) so a
         # broken file doesn't get retried forever on every poll.
         state.mark_processed(path)
         results.append(result)
+
+        if history is not None:
+            try:
+                history.record(str(root), result)
+            except Exception:
+                pass  # never let a history-logging failure disrupt watching
 
     return results

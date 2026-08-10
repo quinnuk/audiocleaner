@@ -1,0 +1,81 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Syntax, unit & integration tests (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AudioCleaner's own runtime dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest
+
+      # mkvmerge + mediainfo are AudioCleaner's own runtime dependencies
+      # (bundled with the Windows build). Installing them here lets the
+      # integration suite (tests/test_integration_fixtures.py) exercise
+      # the real tools instead of only mocks.
+      - name: Install mkvtoolnix & mediainfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mkvtoolnix mediainfo
+
+      - name: Python syntax validation
+        run: |
+          python -m py_compile $(find audiocleaner -name "*.py")
+
+      - name: Import test (non-GUI modules)
+        run: |
+          python -c "from audiocleaner import probe, processor, scanner, watcher, logger, codec_rank, config"
+
+      - name: Unit + integration tests
+        run: |
+          pytest tests/ -v
+
+  windows-build:
+    name: PyInstaller build test (Windows)
+    runs-on: windows-latest
+    # Build-only smoke test: confirms the app still packages into a
+    # working .exe with PySide6 + the bundled MediaInfo/libcurl binaries.
+    # It does not run the packaged exe (no display/media tools available
+    # on the runner) -- that's still a manual release-checklist step.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller AudioCleaner.spec
+
+      - name: Verify the executable was produced
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/AudioCleaner.exe")) {
+            Write-Error "dist/AudioCleaner.exe was not produced"
+            exit 1
+          }
+          Write-Host "Build OK: $((Get-Item dist/AudioCleaner.exe).Length) bytes"

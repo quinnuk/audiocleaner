@@ -29,14 +29,17 @@ from PySide6.QtWidgets import (
     QPushButton, QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox,
     QGroupBox, QFormLayout, QSpinBox, QFrame, QListWidget, QCheckBox,
     QSystemTrayIcon, QMenu, QStyle, QScrollArea,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
 )
 
 from .config import (
     APP_NAME, LOG_FILENAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
     DEFAULT_KEEP_COMMENTARY, DEFAULT_SUBTITLE_FILTER_ENABLED, DEFAULT_SUBTITLE_LANGUAGES,
+    DEFAULT_MAX_SAFETY_MODE, DEFAULT_PERSISTENT_BACKUP, CACHE_FILENAME,
 )
 from .worker import CleanerWorker, WatchWorker, LanguageScanWorker
 from .probe import check_tools_available, get_missing_tools
+from .history import ProcessingHistory
 from . import autostart
 
 # Friendly display names for subtitle-language checkboxes. Falls back to
@@ -72,6 +75,7 @@ _STATUS_COLORS = {
     "cleaned": QColor("#2e7d32"),               # green
     "error": QColor("#c62828"),                 # red
     "no_english": QColor("#b8860b"),             # amber
+    "unknown_codec": QColor("#b8860b"),         # amber - same "skipped, not an error" tone
     "skipped_single_track": QColor("#6b6b6b"),  # muted grey
 }
 
@@ -86,6 +90,109 @@ def _icon_path() -> str | None:
         base = Path(__file__).resolve().parent.parent
     candidate = base / "audio_cleaner_icon.ico"
     return str(candidate) if candidate.is_file() else None
+
+
+class HistoryDialog(QDialog):
+    """Processing History view (spec sec 25): a table of what AudioCleaner
+    has done, across every folder and run, backed by history.ProcessingHistory.
+    Supports filtering by result and opening the containing folder for any
+    entry."""
+
+    _STATUS_FILTERS = ["All", "cleaned", "skipped_single_track", "no_english",
+                        "unknown_codec", "error"]
+    _STATUS_DISPLAY = {
+        "cleaned": "Cleaned", "skipped_single_track": "Already OK",
+        "no_english": "No English audio", "unknown_codec": "Unknown format",
+        "error": "Error", "All": "All",
+    }
+
+    def __init__(self, history: ProcessingHistory, parent=None):
+        super().__init__(parent)
+        self.history = history
+        self.setWindowTitle(f"{APP_NAME} — Processing History")
+        self.resize(900, 500)
+
+        layout = QVBoxLayout(self)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Show:"))
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems([self._STATUS_DISPLAY[s] for s in self._STATUS_FILTERS])
+        self.filter_combo.currentIndexChanged.connect(self._reload)
+        filter_row.addWidget(self.filter_combo)
+        filter_row.addStretch()
+        self.summary_label = QLabel("")
+        filter_row.addWidget(self.summary_label)
+        layout.addLayout(filter_row)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Date", "File", "Folder", "Result", "Saved", "Details"]
+        )
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        layout.addWidget(self.table)
+
+        btn_row = QHBoxLayout()
+        self.open_folder_btn = QPushButton("Open Containing Folder")
+        self.open_folder_btn.clicked.connect(self._on_open_folder)
+        btn_row.addWidget(self.open_folder_btn)
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._reload()
+
+    def _reload(self):
+        status_filter = self._STATUS_FILTERS[self.filter_combo.currentIndex()]
+        entries = self.history.recent(
+            limit=500, status_filter=None if status_filter == "All" else status_filter
+        )
+        self.table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            name = Path(entry.path).name
+            saved = _format_bytes(entry.bytes_saved) if entry.status == "cleaned" and not entry.preview else "—"
+            result_text = self._STATUS_DISPLAY.get(entry.status, entry.status)
+            if entry.preview:
+                result_text += " (preview)"
+            details = entry.message or (CODEC_LABELS.get(entry.kept_codec, entry.kept_codec) if entry.kept_codec else "")
+
+            self.table.setItem(row, 0, QTableWidgetItem(_format_timestamp(entry.timestamp)))
+            self.table.setItem(row, 1, QTableWidgetItem(name))
+            self.table.setItem(row, 2, QTableWidgetItem(entry.folder))
+            self.table.setItem(row, 3, QTableWidgetItem(result_text))
+            self.table.setItem(row, 4, QTableWidgetItem(saved))
+            self.table.setItem(row, 5, QTableWidgetItem(details))
+            # Stash the full path for "Open Containing Folder".
+            self.table.item(row, 1).setData(Qt.UserRole, entry.path)
+
+        totals = self.history.library_totals()
+        self.summary_label.setText(
+            f"{totals['files_cleaned']} file(s) cleaned overall — "
+            f"{_format_bytes(totals['bytes_saved'])} recovered"
+        )
+
+    def _on_open_folder(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, APP_NAME, "Select an entry first.")
+            return
+        item = self.table.item(rows[0].row(), 1)
+        full_path = Path(item.data(Qt.UserRole))
+        folder = full_path.parent
+        if not folder.exists():
+            QMessageBox.warning(self, APP_NAME, f"Folder no longer exists:\n{folder}")
+            return
+        if os.name == "nt":
+            os.startfile(folder)  # noqa: S606 - intended, opens Explorer
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(folder)])
+        else:
+            subprocess.run(["xdg-open", str(folder)])
 
 
 class MainWindow(QWidget):
@@ -117,7 +224,7 @@ class MainWindow(QWidget):
         self._run_queue: list[Path] = []
         self._run_totals = {
             "total_scanned": 0, "cleaned": 0, "skipped_single_track": 0,
-            "no_english": 0, "errors": 0, "total_removed_tracks": 0,
+            "no_english": 0, "unknown_codec": 0, "errors": 0, "total_removed_tracks": 0,
             "total_removed_subtitle_tracks": 0,
             "total_bytes_saved": 0, "elapsed_seconds": 0.0,
         }
@@ -222,6 +329,48 @@ class MainWindow(QWidget):
         startup_row.addWidget(self.autostart_check)
         startup_row.addStretch()
         layout.addLayout(startup_row)
+
+        # Safety options
+        safety_box = QGroupBox("Safety Options")
+        safety_layout = QVBoxLayout()
+
+        self.max_safety_check = QCheckBox(
+            "Maximum Safety Mode — keep a full backup until the replaced file is "
+            "re-verified; auto-restore the original if that check fails"
+        )
+        self.max_safety_check.setChecked(DEFAULT_MAX_SAFETY_MODE)
+        self.max_safety_check.toggled.connect(self._save_safety_options)
+        safety_layout.addWidget(self.max_safety_check)
+
+        self.persistent_backup_check = QCheckBox(
+            "Keep the backup after a successful clean too (uses extra disk space)"
+        )
+        self.persistent_backup_check.setChecked(DEFAULT_PERSISTENT_BACKUP)
+        self.persistent_backup_check.setEnabled(DEFAULT_MAX_SAFETY_MODE)
+        self.persistent_backup_check.toggled.connect(self._save_safety_options)
+        safety_layout.addWidget(self.persistent_backup_check)
+
+        rebuild_row = QHBoxLayout()
+        self.rebuild_cache_btn = QPushButton("Rebuild Cache…")
+        self.rebuild_cache_btn.clicked.connect(self._on_rebuild_cache)
+        rebuild_row.addWidget(self.rebuild_cache_btn)
+        rebuild_row.addWidget(QLabel(
+            "Forces every selected folder to be re-analysed from scratch on the next run. "
+            "Does not modify any media file."
+        ))
+        rebuild_row.addStretch()
+        safety_layout.addLayout(rebuild_row)
+
+        history_row = QHBoxLayout()
+        self.history_btn = QPushButton("Processing History…")
+        self.history_btn.clicked.connect(self._on_show_history)
+        history_row.addWidget(self.history_btn)
+        history_row.addWidget(QLabel("What AudioCleaner has done, across every folder and run."))
+        history_row.addStretch()
+        safety_layout.addLayout(history_row)
+
+        safety_box.setLayout(safety_layout)
+        layout.addWidget(safety_box)
 
         # Audio & subtitle options
         options_box = QGroupBox("Audio && Subtitle Options")
@@ -377,6 +526,17 @@ class MainWindow(QWidget):
         self.preview_check.setChecked(preview)
         self.preview_check.blockSignals(False)
 
+        max_safety = self.settings.value("max_safety_mode", DEFAULT_MAX_SAFETY_MODE, type=bool)
+        self.max_safety_check.blockSignals(True)
+        self.max_safety_check.setChecked(max_safety)
+        self.max_safety_check.blockSignals(False)
+
+        persistent_backup = self.settings.value("persistent_backup", DEFAULT_PERSISTENT_BACKUP, type=bool)
+        self.persistent_backup_check.blockSignals(True)
+        self.persistent_backup_check.setChecked(persistent_backup)
+        self.persistent_backup_check.blockSignals(False)
+        self.persistent_backup_check.setEnabled(max_safety)
+
         self._update_subtitle_controls_enabled()
         self._update_action_buttons_enabled()
 
@@ -392,6 +552,51 @@ class MainWindow(QWidget):
     def _save_audio_subtitle_options(self):
         self.settings.setValue("keep_commentary", self.keep_commentary_check.isChecked())
         self.settings.setValue("subtitle_filter_enabled", self.subtitle_filter_check.isChecked())
+
+    def _save_safety_options(self):
+        # Persistent Backup only makes sense once Maximum Safety Mode is on
+        # (that's the only mode that creates a backup at all).
+        self.persistent_backup_check.setEnabled(self.max_safety_check.isChecked())
+        self.settings.setValue("max_safety_mode", self.max_safety_check.isChecked())
+        self.settings.setValue("persistent_backup", self.persistent_backup_check.isChecked())
+
+    def _on_rebuild_cache(self):
+        if not self.selected_roots:
+            QMessageBox.information(self, APP_NAME, "Add a folder first.")
+            return
+        reply = QMessageBox.question(
+            self, APP_NAME,
+            f"This clears the saved scan cache for {len(self.selected_roots)} folder(s), "
+            f"so every file will be re-analysed (not re-modified) on the next run. "
+            f"No media file is changed by this. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        cleared, errors = 0, []
+        for root in self.selected_roots:
+            cache_path = Path(root) / CACHE_FILENAME
+            if not cache_path.exists():
+                continue
+            try:
+                cache_path.unlink()
+                cleared += 1
+            except OSError as e:
+                errors.append(f"{root}: {e}")
+        msg = f"Cache cleared for {cleared} folder(s)."
+        if errors:
+            msg += "\n\nCouldn't clear:\n" + "\n".join(errors)
+        QMessageBox.information(self, APP_NAME, msg)
+
+    def _on_show_history(self):
+        try:
+            history = ProcessingHistory()
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Couldn't open the processing history database:\n{e}")
+            return
+        dlg = HistoryDialog(history, parent=self)
+        dlg.exec()
+        history.close()
 
     def _update_subtitle_controls_enabled(self):
         enabled = self.subtitle_filter_check.isChecked()
@@ -641,6 +846,8 @@ class MainWindow(QWidget):
             subtitle_filter_enabled=self.subtitle_filter_check.isChecked(),
             subtitle_languages=self._get_selected_subtitle_languages(),
             preview_only=self.preview_check.isChecked(),
+            max_safety_mode=self.max_safety_check.isChecked(),
+            persistent_backup=self.persistent_backup_check.isChecked(),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.file_done.connect(self._on_file_done)
@@ -678,6 +885,7 @@ class MainWindow(QWidget):
             f"{cleaned_label}: {t['cleaned']}",
             f"Files skipped (already single English track): {t['skipped_single_track']}",
             f"Files with no English audio: {t['no_english']}",
+            f"Files with unrecognised audio format: {t['unknown_codec']}",
             f"Errors: {t['errors']}",
             f"{audio_label}: {t['total_removed_tracks']}",
             f"{subtitle_label}: {t['total_removed_subtitle_tracks']}",
@@ -727,6 +935,8 @@ class MainWindow(QWidget):
                 keep_commentary=self.keep_commentary_check.isChecked(),
                 subtitle_filter_enabled=self.subtitle_filter_check.isChecked(),
                 subtitle_languages=self._get_selected_subtitle_languages(),
+                max_safety_mode=self.max_safety_check.isChecked(),
+                persistent_backup=self.persistent_backup_check.isChecked(),
             )
             w.file_done.connect(self._on_watch_file_done)
             w.heartbeat.connect(self._on_watch_heartbeat)
@@ -848,8 +1058,11 @@ def _format_result_line(result) -> str:
         return f"– {name} — already clean"
     if result.status == "no_english":
         return f"⚠ {name} — no English audio, skipped"
+    if result.status == "unknown_codec":
+        return f"⚠ {name} — unrecognised audio format, skipped (file not modified)"
     if result.status == "error":
-        return f"✘ {name} — ERROR: {result.message}"
+        restored = " (original restored from backup)" if getattr(result, "restored_from_backup", False) else ""
+        return f"✘ {name} — ERROR{restored}: {result.message}"
     return f"{name} — {result.status}"
 
 
@@ -862,6 +1075,19 @@ def _format_seconds(seconds: float) -> str:
     if m:
         return f"{m}m {s}s"
     return f"{s}s"
+
+
+def _format_bytes(n: int) -> str:
+    n = max(0, n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _format_timestamp(ts: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
 def main():

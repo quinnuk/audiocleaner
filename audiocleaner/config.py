@@ -4,6 +4,29 @@ Central configuration and constants for AudioCleaner.
 
 APP_NAME = "AudioCleaner"
 
+# --- Cache / rules versioning ---
+# Bump SCANNER_VERSION whenever probe.py's extraction logic changes in a way
+# that could change what a cached FileProbeResult contains (new fields, new
+# matching logic, etc). Bump RULES_VERSION whenever track-selection logic
+# changes (codec_rank.py) in a way that could change *decisions* made from
+# an unchanged probe result. Either bump invalidates old cache entries, so a
+# stale cache never silently keeps applying pre-change decisions.
+SCANNER_VERSION = "2"
+RULES_VERSION = "2"
+
+# --- Maximum Safety Mode ---
+# When enabled, a full backup copy of the original is kept until *after* the
+# post-replacement verification succeeds, and is used to restore the
+# original if that final check fails. Off by default because the normal
+# temp-file-then-verify-then-replace flow is already safe for the common
+# case; this adds extra disk I/O and temporary space usage for users who
+# want the additional guarantee against e.g. a corrupted replace.
+DEFAULT_MAX_SAFETY_MODE = False
+# If True, the backup is kept after a successful run instead of being
+# deleted. Off by default -- most users don't want doubled disk usage
+# building up across a whole library.
+DEFAULT_PERSISTENT_BACKUP = False
+
 # Ordered best -> worst. Keys are internal codec identifiers produced by
 # codec_rank.classify_audio_track(). Lower index = higher priority.
 CODEC_PRIORITY = [

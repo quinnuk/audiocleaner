@@ -422,6 +422,28 @@ AudioCleaner uses MediaInfo alongside `mkvmerge` to reliably detect formats such
 
 ---
 
+## 🧪 Development & Testing
+
+AudioCleaner has an automated test suite under `tests/`, run in CI on every push via GitHub Actions (`.github/workflows/tests.yml`).
+
+```
+pip install -r requirements.txt
+pip install pytest
+pytest tests/
+```
+
+Most tests run with mocked probe data and need nothing beyond Python + pytest. A smaller set of integration tests (`tests/test_integration_fixtures.py`) exercises the real `mkvmerge`/`mediainfo` pipeline against synthetic test files in `tests/fixtures/` — these are skipped automatically if those tools aren't on your `PATH`.
+
+The fixtures themselves are generated (not copyrighted media) from a short colour-bar clip and sine-wave tones. To rebuild them after changing what they cover:
+
+```
+python3 tests/fixtures/build_fixtures.py
+```
+
+(requires `ffmpeg` and `mkvmerge` on `PATH`).
+
+---
+
 ## ☕ Support This Project
 
 AudioCleaner is free and built in my spare time — if it's useful to you, consider buying me a coffee.

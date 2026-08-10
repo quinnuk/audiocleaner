@@ -12,6 +12,7 @@ from .logger import RunLogger
 from .processor import ProcessResult
 from .probe import ProbeCache
 from .watcher import WatchState, watch_iteration
+from .history import ProcessingHistory
 from .config import CACHE_FILENAME, WATCH_POLL_INTERVAL_SECONDS, WATCH_DEFAULT_SETTLE_SECONDS
 
 
@@ -29,6 +30,8 @@ class CleanerWorker(QThread):
         subtitle_filter_enabled: bool = False,
         subtitle_languages: Optional[set] = None,
         preview_only: bool = False,
+        max_safety_mode: bool = False,
+        persistent_backup: bool = False,
     ):
         super().__init__(parent)
         self.root = root
@@ -36,6 +39,8 @@ class CleanerWorker(QThread):
         self.subtitle_filter_enabled = subtitle_filter_enabled
         self.subtitle_languages = subtitle_languages
         self.preview_only = preview_only
+        self.max_safety_mode = max_safety_mode
+        self.persistent_backup = persistent_backup
         self._cancel_requested = False
 
     def cancel(self):
@@ -65,6 +70,8 @@ class CleanerWorker(QThread):
                 subtitle_filter_enabled=self.subtitle_filter_enabled,
                 subtitle_languages=self.subtitle_languages,
                 preview_only=self.preview_only,
+                max_safety_mode=self.max_safety_mode,
+                persistent_backup=self.persistent_backup,
             )
             logger.log_summary(summary)
             self.finished_ok.emit(summary)
@@ -122,6 +129,8 @@ class WatchWorker(QThread):
         keep_commentary: bool = False,
         subtitle_filter_enabled: bool = False,
         subtitle_languages: Optional[set] = None,
+        max_safety_mode: bool = False,
+        persistent_backup: bool = False,
     ):
         super().__init__(parent)
         self.root = root
@@ -129,6 +138,8 @@ class WatchWorker(QThread):
         self.keep_commentary = keep_commentary
         self.subtitle_filter_enabled = subtitle_filter_enabled
         self.subtitle_languages = subtitle_languages
+        self.max_safety_mode = max_safety_mode
+        self.persistent_backup = persistent_backup
         self._stop_requested = False
 
     def stop(self):
@@ -136,10 +147,15 @@ class WatchWorker(QThread):
 
     def run(self):
         logger = None
+        history = None
         try:
             logger = RunLogger(self.root)
             cache = ProbeCache(self.root / CACHE_FILENAME)
             state = WatchState()
+            try:
+                history = ProcessingHistory()
+            except Exception:
+                history = None  # history is a convenience feature; never block watching on it
             self.heartbeat.emit(
                 f"Watching {self.root} for new files "
                 f"(processing after {self.settle_seconds}s of no size change)…"
@@ -150,6 +166,9 @@ class WatchWorker(QThread):
                     keep_commentary=self.keep_commentary,
                     subtitle_filter_enabled=self.subtitle_filter_enabled,
                     subtitle_languages=self.subtitle_languages,
+                    max_safety_mode=self.max_safety_mode,
+                    persistent_backup=self.persistent_backup,
+                    history=history,
                 )
                 if results:
                     cache.save()
@@ -167,3 +186,5 @@ class WatchWorker(QThread):
         finally:
             if logger is not None:
                 logger.close()
+            if history is not None:
+                history.close()

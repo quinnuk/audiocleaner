@@ -17,6 +17,7 @@ from typing import Callable, Optional
 from .config import CACHE_FILENAME, MKV_EXTENSIONS
 from .probe import ProbeCache, probe_file
 from .processor import process_file, ProcessResult
+from .history import ProcessingHistory
 
 
 @dataclass
@@ -25,6 +26,7 @@ class ScanSummary:
     cleaned: int = 0
     skipped_single_track: int = 0
     no_english: int = 0
+    unknown_codec: int = 0
     errors: int = 0
     total_removed_tracks: int = 0
     total_removed_subtitle_tracks: int = 0
@@ -50,6 +52,9 @@ def run_pipeline(
     subtitle_filter_enabled: bool = False,
     subtitle_languages: Optional[set] = None,
     preview_only: bool = False,
+    max_safety_mode: bool = False,
+    persistent_backup: bool = False,
+    history: Optional[ProcessingHistory] = None,
 ) -> ScanSummary:
     """
     on_progress(files_done, files_total, current_filename, phase) is called
@@ -67,6 +72,13 @@ def run_pipeline(
         return summary
 
     cache = ProbeCache(root / CACHE_FILENAME)
+
+    owns_history = history is None
+    if owns_history:
+        try:
+            history = ProcessingHistory()
+        except Exception:
+            history = None  # history is a convenience feature; never block a scan on it
 
     # --- Phase 1: parallel metadata scan (populates cache) ---
     probed = 0
@@ -96,6 +108,8 @@ def run_pipeline(
             subtitle_filter_enabled=subtitle_filter_enabled,
             subtitle_languages=subtitle_languages,
             preview_only=preview_only,
+            max_safety_mode=max_safety_mode,
+            persistent_backup=persistent_backup,
         )
         summary.results.append(result)
         summary.total_scanned += 1
@@ -109,13 +123,23 @@ def run_pipeline(
             summary.skipped_single_track += 1
         elif result.status == "no_english":
             summary.no_english += 1
+        elif result.status == "unknown_codec":
+            summary.unknown_codec += 1
         elif result.status == "error":
             summary.errors += 1
 
         if on_file_done:
             on_file_done(result)
 
+        if history is not None:
+            try:
+                history.record(str(root), result)
+            except Exception:
+                pass  # never let a history-logging failure abort the run
+
     cache.save()
+    if owns_history and history is not None:
+        history.close()
     summary.elapsed_seconds = time.time() - start
     return summary
 

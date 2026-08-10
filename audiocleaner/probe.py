@@ -18,6 +18,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from .config import SCANNER_VERSION, RULES_VERSION
+
 # Suppress console window creation for subprocess calls in a windowed
 # (console=False) build -- otherwise Windows pops a new console per call.
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -129,12 +131,29 @@ class SubtitleTrackInfo:
 
 
 @dataclass
+class VideoTrackInfo:
+    track_id: int
+    codec_id: str = ""
+    codec_name: str = ""
+    width: int = 0
+    height: int = 0
+    language: str = ""
+    default: bool = False
+    forced: bool = False
+
+
+@dataclass
 class FileProbeResult:
     path: str
     size: int
     mtime: float
     audio_tracks: list = field(default_factory=list)      # list[AudioTrackInfo]
     subtitle_tracks: list = field(default_factory=list)   # list[SubtitleTrackInfo]
+    video_tracks: list = field(default_factory=list)      # list[VideoTrackInfo]
+    attachment_count: int = 0
+    chapter_count: int = 0
+    duration_seconds: float = 0.0
+    scanner_version: str = SCANNER_VERSION
     error: Optional[str] = None
 
     def to_json(self) -> dict:
@@ -145,9 +164,15 @@ class FileProbeResult:
     def from_json(d: dict) -> "FileProbeResult":
         tracks = [AudioTrackInfo(**t) for t in d.get("audio_tracks", [])]
         subs = [SubtitleTrackInfo(**t) for t in d.get("subtitle_tracks", [])]
+        vids = [VideoTrackInfo(**t) for t in d.get("video_tracks", [])]
         return FileProbeResult(
             path=d["path"], size=d["size"], mtime=d["mtime"],
-            audio_tracks=tracks, subtitle_tracks=subs, error=d.get("error"),
+            audio_tracks=tracks, subtitle_tracks=subs, video_tracks=vids,
+            attachment_count=d.get("attachment_count", 0),
+            chapter_count=d.get("chapter_count", 0),
+            duration_seconds=d.get("duration_seconds", 0.0),
+            scanner_version=d.get("scanner_version", ""),
+            error=d.get("error"),
         )
 
 
@@ -192,10 +217,22 @@ class ProbeCache:
             # otherwise subtitle filtering would silently never apply to
             # anything that was already cached before this feature existed.
             return None
+        if entry.get("scanner_version") != SCANNER_VERSION:
+            # Extraction/matching logic has changed since this entry was
+            # written (see config.SCANNER_VERSION). A stale entry could
+            # reflect an old, less-reliable track-matching result, so treat
+            # it as a miss and re-probe rather than trust it.
+            return None
         return FileProbeResult.from_json(entry)
 
     def put(self, result: FileProbeResult):
         self._data[result.path] = result.to_json()
+
+    def clear(self):
+        """Wipe all cached entries (used by 'Rebuild Cache'). Does not
+        touch any media file -- the next scan simply re-probes everything
+        from scratch."""
+        self._data = {}
 
 
 def _run_json(cmd: list[str], _attempt: int = 0) -> dict:
@@ -270,44 +307,112 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
         return result
 
     # mediainfo is best-effort; if it fails we fall back to mkvmerge-only data.
-    mi_audio_by_id: dict[int, dict] = {}
+    # Matching mediainfo tracks to mkvmerge tracks by *position among audio
+    # tracks* is fragile: if either tool drops, reorders, or skips a track
+    # (e.g. an unsupported one) the two lists silently desync, and Atmos/
+    # DTS:X metadata from one stream can get attributed to a different one.
+    # Instead, match on Matroska's own track number, which both tools read
+    # from the same container and expose under different key names
+    # (mkvmerge: properties.number: mediainfo: "ID" or "StreamOrder"+1).
+    mi_audio_by_number: dict[int, dict] = {}
+    mi_audio_by_position: dict[int, dict] = {}
     mediainfo_path = find_tool("mediainfo")
     if mediainfo_path is not None:
         try:
             mi_data = _run_json([mediainfo_path, "--Output=JSON", str(path)])
             for track in mi_data.get("media", {}).get("track", []):
-                if track.get("@type") == "Audio":
-                    # mediainfo "StreamOrder" or "ID" roughly maps to mkvmerge track id;
-                    # we match by position among audio tracks as a robust fallback.
-                    mi_audio_by_id[len(mi_audio_by_id)] = track
+                if track.get("@type") != "Audio":
+                    continue
+                mi_audio_by_position[len(mi_audio_by_position)] = track
+                raw_id = track.get("ID")
+                if raw_id is not None:
+                    try:
+                        # MediaInfo sometimes renders this as "3" or "3-1";
+                        # take the leading integer.
+                        num = int(str(raw_id).split("-")[0].strip())
+                        mi_audio_by_number[num] = track
+                    except ValueError:
+                        pass
         except ExternalToolError:
             pass
+
+    def _codec_family(codec_id: str, codec_name: str, mi_format: str) -> str:
+        """Coarse codec family used only as a cross-check that a candidate
+        mediainfo/mkvmerge pairing is plausibly the same stream, before
+        trusting mediainfo's enrichment (Atmos/DTS:X detail) for it."""
+        blob = f"{codec_id} {codec_name} {mi_format}".upper()
+        if "TRUEHD" in blob or "MLP" in blob:
+            return "truehd"
+        if "DTS" in blob:
+            return "dts"
+        if "PCM" in blob:
+            return "pcm"
+        if "FLAC" in blob:
+            return "flac"
+        if "E-AC-3" in blob or "EAC3" in blob:
+            return "eac3"
+        if "AC-3" in blob or "AC3" in blob:
+            return "ac3"
+        if "AAC" in blob:
+            return "aac"
+        if "MP3" in blob or "MPEG AUDIO" in blob:
+            return "mp3"
+        return "other"
 
     audio_index = 0
     for track in mkv_data.get("tracks", []):
         if track.get("type") != "audio":
             continue
         props = track.get("properties", {})
-        mi_track = mi_audio_by_id.get(audio_index, {})
-        track_name = props.get("track_name", "") or ""
+        codec_id = props.get("codec_id", "")
+        codec_name = track.get("codec", "")
+        track_number = props.get("number")
+
+        mi_track = None
+        if track_number is not None and track_number in mi_audio_by_number:
+            mi_track = mi_audio_by_number[track_number]
+        elif audio_index in mi_audio_by_position and len(mi_audio_by_position) == audio_index_total(mkv_data):
+            # Only fall back to positional matching when the audio-track
+            # *counts* from both tools agree -- if mkvmerge and mediainfo
+            # disagree on how many audio tracks exist, position is
+            # meaningless and we'd rather attach nothing than attach the
+            # wrong track's data.
+            mi_track = mi_audio_by_position[audio_index]
+
+        mi_track = mi_track or {}
+        if mi_track:
+            # Cross-check: the candidate mediainfo track's format should be
+            # in the same codec family as what mkvmerge reports for this
+            # stream. If not, this is very likely a mismatch (e.g. a
+            # dropped/reordered track upstream) -- discard the mediainfo
+            # enrichment for this track rather than risk mislabeling an
+            # Atmos/DTS:X flag onto the wrong stream. Classification then
+            # falls back to mkvmerge-only data (safe: may under-detect an
+            # Atmos/DTS:X extension, but will never mis-attribute one).
+            mkv_family = _codec_family(codec_id, codec_name, "")
+            mi_family = _codec_family("", "", mi_track.get("Format", ""))
+            if mkv_family != "other" and mi_family != "other" and mkv_family != mi_family:
+                mi_track = {}
+
+        mi_track_name = props.get("track_name", "") or ""
         result.audio_tracks.append(
             AudioTrackInfo(
                 track_id=track.get("id"),
                 language=(props.get("language") or props.get("language_ietf") or "und").lower(),
-                codec_id=props.get("codec_id", ""),
-                codec_name=track.get("codec", ""),
+                codec_id=codec_id,
+                codec_name=codec_name,
                 channels=props.get("audio_channels", 0),
                 mediainfo_format=mi_track.get("Format", ""),
                 mediainfo_commercial=mi_track.get("Format_Commercial_IfAny", ""),
                 mediainfo_additional_features=mi_track.get("Format_AdditionalFeatures", ""),
                 default=bool(props.get("default_track", False)),
                 forced=bool(props.get("forced_track", False)),
-                track_name=track_name,
+                track_name=mi_track_name,
                 # Prefer mkvmerge's own commentary flag when present; fall
                 # back to a name-text check for files where it isn't set
                 # (many older/less-careful rips never flag it at all).
                 commentary=bool(props.get("flag_commentary", False))
-                           or "commentary" in track_name.lower(),
+                           or "commentary" in mi_track_name.lower(),
             )
         )
         audio_index += 1
@@ -327,6 +432,45 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
             )
         )
 
+    def _parse_dim(dim_str: str) -> tuple[int, int]:
+        try:
+            w, h = dim_str.split("x")[:2]
+            return int(w), int(h)
+        except (ValueError, AttributeError):
+            return 0, 0
+
+    for track in mkv_data.get("tracks", []):
+        if track.get("type") != "video":
+            continue
+        props = track.get("properties", {})
+        width, height = _parse_dim(props.get("pixel_dimensions") or props.get("display_dimensions") or "")
+        result.video_tracks.append(
+            VideoTrackInfo(
+                track_id=track.get("id"),
+                codec_id=props.get("codec_id", ""),
+                codec_name=track.get("codec", ""),
+                width=width,
+                height=height,
+                language=(props.get("language") or props.get("language_ietf") or "und").lower(),
+                default=bool(props.get("default_track", False)),
+                forced=bool(props.get("forced_track", False)),
+            )
+        )
+
+    result.attachment_count = len(mkv_data.get("attachments", []))
+    result.chapter_count = sum(
+        len(edition.get("chapter_atoms", []))
+        for edition in mkv_data.get("chapters", [])
+    )
+    container = mkv_data.get("container", {}).get("properties", {})
+    duration_ns = container.get("duration")
+    if duration_ns:
+        result.duration_seconds = duration_ns / 1_000_000_000
+
     if cache is not None:
         cache.put(result)
     return result
+
+
+def audio_index_total(mkv_data: dict) -> int:
+    return sum(1 for t in mkv_data.get("tracks", []) if t.get("type") == "audio")

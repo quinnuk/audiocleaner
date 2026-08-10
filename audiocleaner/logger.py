@@ -36,8 +36,11 @@ class RunLogger:
             line = f"[{ts}] SKIPPED  {result.path} (already only track: {codec})\n"
         elif result.status == "no_english":
             line = f"[{ts}] NO ENGLISH AUDIO  {result.path} -- {result.message}\n"
+        elif result.status == "unknown_codec":
+            line = f"[{ts}] UNKNOWN FORMAT  {result.path} -- {result.message}\n"
         elif result.status == "error":
-            line = f"[{ts}] ERROR    {result.path} -- {result.message}\n"
+            restored = " (restored from backup)" if result.restored_from_backup else ""
+            line = f"[{ts}] ERROR    {result.path}{restored} -- {result.message}\n"
         else:
             line = f"[{ts}] {result.status.upper()}  {result.path}\n"
         self._fh.write(line)
@@ -50,6 +53,7 @@ class RunLogger:
             f"Cleaned: {summary.cleaned}\n"
             f"Skipped (already single English track): {summary.skipped_single_track}\n"
             f"No English audio: {summary.no_english}\n"
+            f"Unknown audio format: {summary.unknown_codec}\n"
             f"Errors: {summary.errors}\n"
             f"Audio tracks removed: {summary.total_removed_tracks}\n"
             f"Disk space recovered: {summary.total_bytes_saved / 1_048_576:.1f} MB\n"
