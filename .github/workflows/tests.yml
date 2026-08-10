@@ -26,10 +26,6 @@ jobs:
         run: |
           pip install pytest
 
-      # mkvmerge + mediainfo are AudioCleaner's own runtime dependencies
-      # (bundled with the Windows build). Installing them here lets the
-      # integration suite (tests/test_integration_fixtures.py) exercise
-      # the real tools instead of only mocks.
       - name: Install mkvtoolnix & mediainfo
         run: |
           sudo apt-get update
@@ -48,12 +44,8 @@ jobs:
           pytest tests/ -v
 
   windows-build:
-    name: PyInstaller build test (Windows)
+    name: PyInstaller build & launch smoke test (Windows)
     runs-on: windows-latest
-    # Build-only smoke test: confirms the app still packages into a
-    # working .exe with PySide6 + the bundled MediaInfo/libcurl binaries.
-    # It does not run the packaged exe (no display/media tools available
-    # on the runner) -- that's still a manual release-checklist step.
     steps:
       - uses: actions/checkout@v4
 
@@ -79,3 +71,22 @@ jobs:
             exit 1
           }
           Write-Host "Build OK: $((Get-Item dist/AudioCleaner.exe).Length) bytes"
+
+      - name: Launch executable smoke test
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/AudioCleaner.exe").Path
+          $proc = Start-Process -FilePath $exe -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            if ($proc.HasExited) {
+              Write-Error "AudioCleaner.exe exited during the launch smoke test with code $($proc.ExitCode)"
+              exit 1
+            }
+            Write-Host "Launch OK: process remained running for 8 seconds"
+          }
+          finally {
+            if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
