@@ -1,4 +1,3 @@
-
 # Python
 __pycache__/
 *.pyc
@@ -8,10 +7,25 @@ __pycache__/
 build/
 dist/
 *.exe
+pyi_debug.log
+
+# Bundled third-party MediaInfo CLI distribution (should be downloaded
+# fresh from mediaarea.net, not committed -- see README "Requirements").
+# If you ship it alongside AudioCleaner.exe for convenience, do it via
+# a GitHub Release asset, not a git commit.
+License.html
+History.txt
+ReadMe.txt
+Contrib/
+Plugin/
 
 # Local watch-mode cache & logs created at runtime in watched folders
 .audiocleaner_cache.json
 audiocleaner_log.txt
+audiocleaner_log.txt.*
+
+# pytest
+.pytest_cache/
 
 # Editor/OS cruft
 .vscode/

@@ -74,6 +74,7 @@ def watch_iteration(
     max_safety_mode: bool = False,
     persistent_backup: bool = False,
     history: Optional[ProcessingHistory] = None,
+    preferred_languages: Optional[set] = None,
 ) -> list[ProcessResult]:
     """
     One polling pass over the folder tree. Returns a ProcessResult for
@@ -102,6 +103,7 @@ def watch_iteration(
             subtitle_languages=subtitle_languages,
             max_safety_mode=max_safety_mode,
             persistent_backup=persistent_backup,
+            preferred_languages=preferred_languages,
         )
         # Mark processed regardless of outcome (including errors) so a
         # broken file doesn't get retried forever on every poll.

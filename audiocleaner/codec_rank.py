@@ -16,8 +16,14 @@ from .config import ENGLISH_LANG_CODES, CODEC_RANK, CODEC_LABELS
 from .probe import AudioTrackInfo, FileProbeResult
 
 
+def _is_preferred_language(track: AudioTrackInfo, languages) -> bool:
+    return track.language.lower() in languages
+
+
 def _is_english(track: AudioTrackInfo) -> bool:
-    return track.language.lower() in ENGLISH_LANG_CODES
+    """Back-compat wrapper: English only. Prefer _is_preferred_language
+    with an explicit language set for new code."""
+    return _is_preferred_language(track, ENGLISH_LANG_CODES)
 
 
 def is_commentary(track: AudioTrackInfo) -> bool:
@@ -79,18 +85,22 @@ def rank_of(codec_key: str) -> int:
 def select_audio_tracks_to_keep(
     result: FileProbeResult,
     keep_commentary: bool = False,
+    preferred_languages: Optional[set] = None,
 ) -> tuple[Optional[AudioTrackInfo], Optional[str], list]:
     """
     Returns (best_track, codec_key, extra_tracks):
-      - best_track / codec_key: the single highest-priority English track,
+      - best_track / codec_key: the single highest-priority track in one of
+        preferred_languages (English only by default -- pass an explicit
+        set, e.g. {"eng", "jpn"}, to keep a different language or several),
         chosen from non-commentary tracks whenever any exist (so a
         commentary track never accidentally becomes "the" kept track,
         regardless of the keep_commentary setting).
-      - extra_tracks: additional English commentary track(s) to keep
-        alongside best_track. Empty unless keep_commentary is True.
-    Returns (None, None, []) if no English audio exists at all.
+      - extra_tracks: additional matching-language commentary track(s) to
+        keep alongside best_track. Empty unless keep_commentary is True.
+    Returns (None, None, []) if no track in preferred_languages exists.
     """
-    english_tracks = [t for t in result.audio_tracks if _is_english(t)]
+    languages = {l.lower() for l in preferred_languages} if preferred_languages else ENGLISH_LANG_CODES
+    english_tracks = [t for t in result.audio_tracks if _is_preferred_language(t, languages)]
     if not english_tracks:
         return None, None, []
 
@@ -149,13 +159,15 @@ class AudioTrackDecision:
 def explain_audio_selection(
     result: FileProbeResult,
     keep_commentary: bool = False,
+    preferred_languages: Optional[set] = None,
 ) -> list:
     """Per-track KEEP/REMOVE decisions with a human-readable reason for
     each, built from exactly the same selection this module's
     select_audio_tracks_to_keep() would make -- so the explanation can
     never drift out of sync with the actual behaviour (spec sec 15)."""
+    languages = {l.lower() for l in preferred_languages} if preferred_languages else ENGLISH_LANG_CODES
     best_track, best_key, extra_tracks = select_audio_tracks_to_keep(
-        result, keep_commentary=keep_commentary
+        result, keep_commentary=keep_commentary, preferred_languages=languages
     )
     keep_ids = set()
     if best_track is not None:
@@ -179,8 +191,12 @@ def explain_audio_selection(
             else:
                 reason = "Commentary track kept in addition to the primary track because 'Keep commentary' is enabled."
         else:
-            if not _is_english(track):
-                reason = f"Not an English track (language: {track.language or 'und'})."
+            if not _is_preferred_language(track, languages):
+                if preferred_languages is None:
+                    # Back-compat wording for the default (English-only) case.
+                    reason = f"Not an English track (language: {track.language or 'und'})."
+                else:
+                    reason = f"Not a preferred-language track (language: {track.language or 'und'})."
             elif commentary and not keep_commentary:
                 reason = "Commentary track removed ('Keep commentary' is off)."
             elif best_label is not None:
@@ -241,13 +257,16 @@ def needs_processing(
     keep_commentary: bool = False,
     subtitle_filter_enabled: bool = False,
     subtitle_languages=None,
+    preferred_languages: Optional[set] = None,
 ) -> bool:
     """
     A file needs processing if the audio tracks that would be kept differ
     from what's already on disk, or (when subtitle filtering is enabled)
     if the subtitle tracks that would be kept differ from what's on disk.
     """
-    best_track, _key, extra_tracks = select_audio_tracks_to_keep(result, keep_commentary=keep_commentary)
+    best_track, _key, extra_tracks = select_audio_tracks_to_keep(
+        result, keep_commentary=keep_commentary, preferred_languages=preferred_languages
+    )
     if best_track is None:
         return True  # no English audio at all - report as an error case upstream
 

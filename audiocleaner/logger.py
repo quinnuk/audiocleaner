@@ -5,14 +5,59 @@ Simple, human-readable logging to a text file in the target root folder.
 import datetime
 from pathlib import Path
 
-from .config import LOG_FILENAME
+from .config import LOG_FILENAME, LOG_MAX_BYTES, LOG_BACKUP_COUNT
 from .processor import ProcessResult
 from .config import CODEC_LABELS
+
+
+def _rotate_if_needed(log_path: Path, max_bytes: int = LOG_MAX_BYTES,
+                       backup_count: int = LOG_BACKUP_COUNT) -> None:
+    """If log_path exists and has grown past max_bytes, roll it: .N -> .N+1
+    (oldest beyond backup_count is discarded), then current -> .1, leaving
+    a fresh file to be opened for append. A watch-mode instance left
+    running for months would otherwise grow this file without bound.
+    """
+    try:
+        if not log_path.exists() or log_path.stat().st_size < max_bytes:
+            return
+    except OSError:
+        return
+
+    # Shift existing backups up by one (.2 -> .3, .1 -> .2, ...), dropping
+    # anything that would land beyond backup_count.
+    for i in range(backup_count - 1, 0, -1):
+        src = log_path.with_name(f"{log_path.name}.{i}")
+        dst = log_path.with_name(f"{log_path.name}.{i + 1}")
+        if src.exists():
+            try:
+                if dst.exists():
+                    dst.unlink()
+                src.rename(dst)
+            except OSError:
+                pass  # rotation is best-effort; never block logging over it
+
+    if backup_count > 0:
+        dst = log_path.with_name(f"{log_path.name}.1")
+        try:
+            if dst.exists():
+                dst.unlink()
+            log_path.rename(dst)
+        except OSError:
+            pass
+    else:
+        try:
+            log_path.unlink()
+        except OSError:
+            pass
 
 
 class RunLogger:
     def __init__(self, root: Path):
         self.log_path = root / LOG_FILENAME
+        # Read the module-level constants at call time (not as bound
+        # defaults) so tests can monkeypatch logger.LOG_MAX_BYTES /
+        # logger.LOG_BACKUP_COUNT and have it take effect here.
+        _rotate_if_needed(self.log_path, max_bytes=LOG_MAX_BYTES, backup_count=LOG_BACKUP_COUNT)
         self._fh = open(self.log_path, "a", encoding="utf-8")
         self._write_header()
 

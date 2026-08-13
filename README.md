@@ -41,9 +41,11 @@
 - [How It Works](#️-how-it-works)
 - [Subtitle Language Filtering](#️-subtitle-language-filtering)
 - [Watch Mode, System Tray & Autostart](#-watch-mode-system-tray--autostart)
+- [Headless CLI Mode](#️-headless-cli-mode)
 - [Smart Caching](#-smart-caching)
 - [Codec Detection Caveat](#️-codec-detection-caveat)
 - [Building a Standalone .exe](#-building-a-standalone-exe)
+- [Repo Notes](#-repo-notes)
 - [Project Structure](#-project-structure)
 - [External Dependencies](#-external-dependencies)
 - [Development & Testing](#-development--testing)
@@ -54,7 +56,7 @@
 
 ## ✨ What is AudioCleaner?
 
-AudioCleaner is a simple, **"set it and forget it" Windows application** that recursively scans your MKV library and keeps exactly one best-quality English audio track per file.
+AudioCleaner is a simple, **"set it and forget it" Windows application** (with an optional headless CLI mode for servers/Docker) that recursively scans your MKV library and keeps exactly one best-quality audio track per file — English by default, with other languages selectable via the CLI.
 
 It is designed to be safe and hands-off:
 
@@ -157,6 +159,9 @@ Enable it from **Safety Options** in the app.
 | 🎙️ | **Commentary Track Control** | Choose whether commentary tracks are removed (default) or kept alongside the main audio track |
 | 💬 | **Subtitle Language Filtering** | Optionally clean subtitles too, keeping only the languages you choose plus any Forced tracks |
 | ❓ | **Unknown-Codec Safety** | Files with an audio codec AudioCleaner can't confidently identify are skipped, never guessed at |
+| 🖱️ | **Headless CLI Mode** | Run scans or continuous watching from the command line — no GUI, no display required — for servers, Docker, or Radarr/Sonarr boxes |
+| 🌍 | **Configurable Language(s)** | Choose which audio language(s) to keep (CLI only for now); English by default |
+| 🔄 | **Log Rotation** | `audiocleaner_log.txt` rotates automatically once it grows large, so a long-running Watch Mode instance never accumulates an unbounded log |
 
 ---
 
@@ -401,6 +406,46 @@ No administrator rights are required, and unticking the option removes the entry
 
 ---
 
+## 🖱️ Headless CLI Mode
+
+Everything above assumes the GUI. For a Linux/Docker box, a headless Windows server, or anywhere else a display isn't available (e.g. sitting alongside Radarr/Sonarr on an Unraid or NAS setup), AudioCleaner can also run entirely from the command line — no PySide6 import, no display required.
+
+```bash
+# One-off scan
+python main.py scan "D:\Movies"
+
+# Preview only — reports what would change, touches nothing
+python main.py scan "D:\Movies" --dry-run
+
+# Run continuously, cleaning new files as they arrive (like Watch Mode)
+python main.py scan "D:\Movies" --watch
+
+# Keep more than just English, e.g. English + Japanese
+python main.py scan "D:\Movies" --languages eng,jpn
+
+# See every available option
+python main.py scan --help
+```
+
+Common options:
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` / `--preview` | Report what would change without modifying any files |
+| `--watch` | Keep running and clean new files as they settle, instead of a one-off scan |
+| `--settle-seconds N` | With `--watch`, how long a file must be unchanged before it's processed (default 120s) |
+| `--languages eng,jpn` | Comma-separated language codes to keep (default: `eng`) |
+| `--keep-commentary` | Keep commentary track(s) alongside the selected primary track |
+| `--subtitle-filter` | Enable subtitle language filtering (off by default) |
+| `--subtitle-languages eng` | Comma-separated subtitle languages to keep, if filtering is on |
+| `--max-safety-mode` | Keep a full backup until final verification succeeds |
+| `--persistent-backup` | With `--max-safety-mode`, keep the backup after a successful run |
+| `--quiet` | Only print the final summary, not a line per file |
+
+The CLI uses the exact same scan/select/process/verify pipeline as the GUI — same safety guarantees, same log file, same processing history — it's just a different front end. Anything other than `scan` as the first argument (or no arguments at all) launches the GUI as normal, so this doesn't change how you'd run AudioCleaner day-to-day.
+
+---
+
 ## 💾 Smart Caching
 
 Large media libraries can contain thousands of files.
@@ -414,6 +459,8 @@ AudioCleaner caches probed metadata in:
 This allows unchanged files to be skipped on subsequent scans, making repeated scans of an established library much faster.
 
 Cache entries are tied to the version of AudioCleaner's scanning and rules logic that produced them. If an update changes how files are probed or how tracks are selected, older cache entries are automatically treated as stale and re-probed — so an update can never silently keep applying decisions made under the old logic. Use **Rebuild Cache…** in Safety Options at any time to force a full re-analysis of a folder without modifying any media file.
+
+The processing log (`audiocleaner_log.txt`) rotates automatically once it exceeds 5 MB, keeping up to 2 backup copies (`.1`, `.2`) — so a Watch Mode instance left running for months won't accumulate an unbounded log file.
 
 ---
 
@@ -434,16 +481,28 @@ For a new library, it is worth spot-checking the log after the first scan.
 If you'd rather build AudioCleaner yourself instead of using the release download:
 
 1. Make sure `pip install -r requirements.txt` has already been run.
-2. Double-click **`build.bat`** in this folder (or run it from a Command Prompt).
-3. It installs PyInstaller if needed, then builds. When it finishes, your exe is at `dist\AudioCleaner.exe` — copy that one file anywhere you like and run it directly. No Python installation is needed on the machine you copy it to.
+2. Download the **MediaInfo CLI** edition for Windows from [mediaarea.net](https://mediaarea.net/en/MediaInfo/Download/Windows), and copy `MediaInfo.exe` + `LIBCURL.DLL` from the download into this project folder (next to `main.py`). These are gitignored on purpose — see [Repo Notes](#-repo-notes) below — so a fresh clone won't have them yet; `AudioCleaner.spec` bundles both into the built exe.
+3. Double-click **`build.bat`** in this folder (or run it from a Command Prompt). It checks for `MediaInfo.exe`/`LIBCURL.DLL` first and tells you where to get them if they're missing, then installs PyInstaller if needed and builds.
+4. When it finishes, your exe is at `dist\AudioCleaner.exe` — copy that one file anywhere you like and run it directly. No Python installation is needed on the machine you copy it to.
 
 ### Build Notes
 
 - Build **on Windows** — PyInstaller packages against the operating system it runs on.
 - The first launch of a `--onefile` build may be slightly slower because it extracts itself into a temporary directory.
-- `mkvmerge` still needs to be installed separately.
+- `mkvmerge` still needs to be installed separately (it's not bundled the way MediaInfo is).
 - The executable checks for `mkvmerge` and shows a download prompt if it is missing.
-- Rebuilding: just re-run `build.bat` any time you get updated source files — it overwrites the previous `dist\AudioCleaner.exe`.
+- Rebuilding: just re-run `build.bat` any time you get updated source files — it overwrites the previous `dist\AudioCleaner.exe`. `MediaInfo.exe`/`LIBCURL.DLL` only need to be fetched once; they stay in the folder (gitignored) between rebuilds.
+
+---
+
+## 📝 Repo Notes
+
+A few files are deliberately **not** tracked in git (see `.gitignore`), even though some are needed locally to build:
+
+- `MediaInfo.exe`, `LIBCURL.DLL`, and MediaInfo's `Contrib/`/`Plugin/`/`License.html` — the MediaInfo CLI distribution. `AudioCleaner.spec` bundles the two `.exe`/`.dll` files into the build (see [Building a Standalone .exe](#-building-a-standalone-exe) above), but the full distribution shouldn't live in git history — download it fresh instead.
+- `pyi_debug.log` — leftover PyInstaller debug output, not meaningful outside the machine that produced it.
+- `audiocleaner_log.txt` / `audiocleaner_log.txt.1` / `.2` — per-folder runtime logs (with rotation, see [Smart Caching](#-smart-caching)), regenerated on every run.
+- `.audiocleaner_cache.json` — the per-folder metadata cache, regenerated automatically if missing.
 
 ---
 
@@ -460,8 +519,10 @@ audiocleaner/
 ├── watcher.py      # Folder watching for continuous/background cleaning
 ├── worker.py       # QThread wrapper to keep the GUI responsive
 ├── gui.py          # PySide6 single-page interface
+├── cli.py          # Headless command-line interface (no GUI required)
+├── logger.py       # Per-folder run log, with automatic rotation
 ├── autostart.py    # Windows "Start with Windows" support
-└── main.py         # Application entry point
+└── main.py         # Application entry point — dispatches to cli.py or gui.py
 ```
 
 ---

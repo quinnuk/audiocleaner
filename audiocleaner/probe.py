@@ -241,6 +241,12 @@ def _run_json(cmd: list[str], _attempt: int = 0) -> dict:
     _RETRY_DELAYS = [1, 3, 6]  # seconds before attempts 2, 3, 4
 
     try:
+        # stdin is explicitly closed (not inherited): mkvmerge/mediainfo
+        # never read from it, and on Windows the parent's stdin handle can
+        # be invalid in some launch contexts (a windowed/console-less
+        # process, or a test runner that's redirected stdio) -- inheriting
+        # it there raises "OSError: [WinError 6] The handle is invalid"
+        # before the child process even starts.
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -249,6 +255,7 @@ def _run_json(cmd: list[str], _attempt: int = 0) -> dict:
             timeout=120,
             check=False,
             creationflags=_NO_WINDOW,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as e:
         raise ExternalToolError(f"Tool not found: {cmd[0]}") from e

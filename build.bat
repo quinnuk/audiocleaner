@@ -1,6 +1,25 @@
 @echo off
 echo === AudioCleaner build ===
 echo.
+
+if not exist "MediaInfo.exe" goto missing_mediainfo
+if not exist "LIBCURL.DLL" goto missing_mediainfo
+goto have_mediainfo
+
+:missing_mediainfo
+echo MediaInfo.exe and/or LIBCURL.DLL not found in this folder.
+echo AudioCleaner.spec bundles both into the built exe, so they must be
+echo present here before building (they are gitignored on purpose --
+echo see .gitignore -- so a fresh clone won't have them yet).
+echo.
+echo Download the MediaInfo CLI (Windows, "CLI" edition) from:
+echo   https://mediaarea.net/en/MediaInfo/Download/Windows
+echo Unzip it and copy MediaInfo.exe + LIBCURL.DLL into this folder,
+echo then run build.bat again.
+pause
+exit /b 1
+
+:have_mediainfo
 echo Installing PyInstaller (skips if already installed)...
 pip install pyinstaller
 if errorlevel 1 (

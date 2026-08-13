@@ -79,6 +79,7 @@ def process_file(
     preview_only: bool = False,
     max_safety_mode: bool = False,
     persistent_backup: bool = False,
+    preferred_languages=None,
 ) -> ProcessResult:
     result = probe_file(path, cache=cache)
     if result.error:
@@ -89,11 +90,11 @@ def process_file(
                               message="No audio tracks found in file.")
 
     best_track, codec_key, extra_audio_tracks = select_audio_tracks_to_keep(
-        result, keep_commentary=keep_commentary
+        result, keep_commentary=keep_commentary, preferred_languages=preferred_languages
     )
     if best_track is None:
         return ProcessResult(path=str(path), status="no_english",
-                              message="No English audio track found; file skipped.")
+                              message="No audio track in the preferred language(s) found; file skipped.")
 
     # Safety principle: if AudioCleaner can't confidently classify the
     # audio it would keep, it must not touch the file. An "unknown" codec
@@ -111,7 +112,9 @@ def process_file(
     original_audio_ids = {t.track_id for t in result.audio_tracks}
     audio_unchanged = original_audio_ids == set(keep_audio_ids)
 
-    audio_decisions = explain_audio_selection(result, keep_commentary=keep_commentary)
+    audio_decisions = explain_audio_selection(
+        result, keep_commentary=keep_commentary, preferred_languages=preferred_languages
+    )
 
     # Subtitle selection is only evaluated when the feature is switched on;
     # otherwise subtitles are left completely alone, same as before this
@@ -200,6 +203,12 @@ def process_file(
     cmd.append(str(path))
 
     try:
+        # stdin is explicitly closed (not inherited): mkvmerge/mediainfo
+        # never read from it, and on Windows the parent's stdin handle can
+        # be invalid in some launch contexts (a windowed/console-less
+        # process, or a test runner that's redirected stdio) -- inheriting
+        # it there raises "OSError: [WinError 6] The handle is invalid"
+        # before the child process even starts.
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -207,6 +216,7 @@ def process_file(
             errors="replace",
             timeout=3600,
             creationflags=_REMUX_CREATE_FLAGS,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return ProcessResult(path=str(path), status="error",
