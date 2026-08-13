@@ -55,6 +55,7 @@ def run_pipeline(
     max_safety_mode: bool = False,
     persistent_backup: bool = False,
     history: Optional[ProcessingHistory] = None,
+    preferred_languages: Optional[set] = None,
 ) -> ScanSummary:
     """
     on_progress(files_done, files_total, current_filename, phase) is called
@@ -110,6 +111,7 @@ def run_pipeline(
             preview_only=preview_only,
             max_safety_mode=max_safety_mode,
             persistent_backup=persistent_backup,
+            preferred_languages=preferred_languages,
         )
         summary.results.append(result)
         summary.total_scanned += 1

@@ -32,6 +32,7 @@ class CleanerWorker(QThread):
         preview_only: bool = False,
         max_safety_mode: bool = False,
         persistent_backup: bool = False,
+        preferred_languages: Optional[set] = None,
     ):
         super().__init__(parent)
         self.root = root
@@ -41,6 +42,7 @@ class CleanerWorker(QThread):
         self.preview_only = preview_only
         self.max_safety_mode = max_safety_mode
         self.persistent_backup = persistent_backup
+        self.preferred_languages = preferred_languages
         self._cancel_requested = False
 
     def cancel(self):
@@ -72,6 +74,7 @@ class CleanerWorker(QThread):
                 preview_only=self.preview_only,
                 max_safety_mode=self.max_safety_mode,
                 persistent_backup=self.persistent_backup,
+                preferred_languages=self.preferred_languages,
             )
             logger.log_summary(summary)
             self.finished_ok.emit(summary)
@@ -131,6 +134,7 @@ class WatchWorker(QThread):
         subtitle_languages: Optional[set] = None,
         max_safety_mode: bool = False,
         persistent_backup: bool = False,
+        preferred_languages: Optional[set] = None,
     ):
         super().__init__(parent)
         self.root = root
@@ -140,6 +144,7 @@ class WatchWorker(QThread):
         self.subtitle_languages = subtitle_languages
         self.max_safety_mode = max_safety_mode
         self.persistent_backup = persistent_backup
+        self.preferred_languages = preferred_languages
         self._stop_requested = False
 
     def stop(self):
@@ -169,6 +174,7 @@ class WatchWorker(QThread):
                     max_safety_mode=self.max_safety_mode,
                     persistent_backup=self.persistent_backup,
                     history=history,
+                    preferred_languages=self.preferred_languages,
                 )
                 if results:
                     cache.save()

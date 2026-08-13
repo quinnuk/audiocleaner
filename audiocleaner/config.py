@@ -64,6 +64,13 @@ CODEC_LABELS = {
 # English language tags as they appear in MKV/mkvmerge/mediainfo output.
 ENGLISH_LANG_CODES = {"eng", "en", "en-us", "en-gb"}
 
+# --- Preferred audio language(s) ---
+# The language(s) AudioCleaner treats as "the audio to keep", i.e. what
+# gets passed to codec_rank.select_audio_tracks_to_keep(). English only by
+# default, matching the app's original behaviour. Currently only exposed
+# via the CLI (--languages); the GUI still targets English only.
+DEFAULT_PREFERRED_LANGUAGES = set(ENGLISH_LANG_CODES)
+
 # --- Commentary tracks ---
 # Off by default: commentary tracks are treated like any other extra audio
 # track and stripped. When on, the single best non-commentary track is
@@ -87,6 +94,14 @@ CACHE_FILENAME = ".audiocleaner_cache.json"
 
 # Log file name written into the target root folder.
 LOG_FILENAME = "audiocleaner_log.txt"
+
+# --- Log rotation ---
+# audiocleaner_log.txt is append-only and, on a watch-mode instance left
+# running for months, would otherwise grow without bound. When the log
+# exceeds LOG_MAX_BYTES at the start of a run, it's rotated out to a
+# ".1" (etc, up to LOG_BACKUP_COUNT) file before a fresh log is started.
+LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+LOG_BACKUP_COUNT = 2
 
 MKV_EXTENSIONS = {".mkv"}
 
