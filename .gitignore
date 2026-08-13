@@ -13,8 +13,6 @@ pyi_debug.log
 # fresh from mediaarea.net, not committed -- see README "Requirements").
 # If you ship it alongside AudioCleaner.exe for convenience, do it via
 # a GitHub Release asset, not a git commit.
-MediaInfo.exe
-LIBCURL.DLL
 License.html
 History.txt
 ReadMe.txt
