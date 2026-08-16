@@ -10,7 +10,6 @@ cache keyed on size+mtime, used purely to skip re-probing unchanged files)
 -- history is an append-only log, kept centrally so a single view covers
 every library.
 """
-import json
 import os
 import sqlite3
 import time
@@ -130,13 +129,19 @@ class ProcessingHistory:
         cols = [d[0] for d in self._conn.execute("SELECT * FROM history LIMIT 0").description]
         return [HistoryEntry(**dict(zip(cols, row))) for row in rows]
 
-    def for_path(self, path: str, limit: int = 20) -> list:
-        """History for one specific file, most recent first -- used by the
-        file review screen to show what happened to *this* file over time."""
-        rows = self._conn.execute(
-            "SELECT * FROM history WHERE path = ? ORDER BY timestamp DESC LIMIT ?",
-            (str(path), limit),
-        ).fetchall()
+    def search(self, term: str, limit: int = 500, status_filter: Optional[str] = None) -> list:
+        """Entries whose path contains `term` (case-insensitive substring
+        match), most recent first -- backs the History dialog's search box,
+        so "what did AudioCleaner do to Dune.mkv last week?" doesn't
+        require typing the exact full path."""
+        query = "SELECT * FROM history WHERE path LIKE ? COLLATE NOCASE"
+        params: list = [f"%{term}%"]
+        if status_filter:
+            query += " AND status = ?"
+            params.append(status_filter)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
         cols = [d[0] for d in self._conn.execute("SELECT * FROM history LIMIT 0").description]
         return [HistoryEntry(**dict(zip(cols, row))) for row in rows]
 

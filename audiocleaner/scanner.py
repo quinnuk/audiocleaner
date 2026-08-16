@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from .config import CACHE_FILENAME, MKV_EXTENSIONS
 from .probe import ProbeCache, probe_file
-from .processor import process_file, ProcessResult
+from .processor import process_file, ProcessResult, ProcessingCancelled
 from .history import ProcessingHistory
 
 
@@ -44,7 +44,7 @@ def find_mkv_files(root: Path) -> list[Path]:
 
 def run_pipeline(
     root: Path,
-    on_progress: Optional[Callable[[int, int, str, str], None]] = None,
+    on_progress: Optional[Callable[..., None]] = None,
     on_file_done: Optional[Callable[[ProcessResult], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     probe_workers: int = 4,
@@ -58,10 +58,17 @@ def run_pipeline(
     preferred_languages: Optional[set] = None,
 ) -> ScanSummary:
     """
-    on_progress(files_done, files_total, current_filename, phase) is called
-    repeatedly during both the scan and process phases.
+    on_progress(files_done, files_total, current_filename, phase, file_pct)
+    is called repeatedly during both the scan and process phases. file_pct
+    is -1 except while a remux is actively in progress, where it's the
+    current file's own 0-100 completion (from mkvmerge's --gui-mode
+    output) -- this is what lets a single large file show real progress
+    instead of appearing frozen for however long its remux takes.
     on_file_done(ProcessResult) is called once per file after processing.
-    should_cancel() lets the caller request an early stop between files.
+    should_cancel() lets the caller request an early stop -- checked
+    between files, AND polled every ~0.5s during an in-progress remux, so
+    cancelling actually interrupts a slow/stuck file instead of waiting
+    for it to finish or time out.
     """
     start = time.time()
     summary = ScanSummary()
@@ -89,7 +96,7 @@ def run_pipeline(
             f = futures[future]
             probed += 1
             if on_progress:
-                on_progress(probed, total, f.name, "scanning")
+                on_progress(probed, total, f.name, "scanning", -1)
             try:
                 future.result()
             except Exception:
@@ -101,18 +108,28 @@ def run_pipeline(
         if should_cancel and should_cancel():
             break
         if on_progress:
-            on_progress(i, total, f.name, "processing")
+            on_progress(i, total, f.name, "processing", -1)
 
-        result = process_file(
-            f, cache=cache,
-            keep_commentary=keep_commentary,
-            subtitle_filter_enabled=subtitle_filter_enabled,
-            subtitle_languages=subtitle_languages,
-            preview_only=preview_only,
-            max_safety_mode=max_safety_mode,
-            persistent_backup=persistent_backup,
-            preferred_languages=preferred_languages,
-        )
+        def _on_remux_progress(pct, _i=i, _f=f):
+            if on_progress:
+                on_progress(_i, total, _f.name, "processing", int(pct * 100))
+
+        try:
+            result = process_file(
+                f, cache=cache,
+                keep_commentary=keep_commentary,
+                subtitle_filter_enabled=subtitle_filter_enabled,
+                subtitle_languages=subtitle_languages,
+                preview_only=preview_only,
+                max_safety_mode=max_safety_mode,
+                persistent_backup=persistent_backup,
+                preferred_languages=preferred_languages,
+                on_remux_progress=_on_remux_progress if on_progress else None,
+                should_cancel=should_cancel,
+            )
+        except ProcessingCancelled:
+            break  # the in-progress file's temp output was already cleaned up
+
         summary.results.append(result)
         summary.total_scanned += 1
 

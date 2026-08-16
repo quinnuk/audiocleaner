@@ -5,11 +5,15 @@ The original file is never touched until verification has succeeded.
 """
 
 import os
+import queue
+import re
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .probe import probe_file, ExternalToolError, find_tool, FileProbeResult
 from .codec_rank import (
@@ -34,6 +38,122 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 # same time). No effect on non-Windows platforms.
 _BACKGROUND_MODE = 0x00100000 if os.name == "nt" else 0
 _REMUX_CREATE_FLAGS = _NO_WINDOW | _BACKGROUND_MODE
+
+# Hard ceiling on a single remux, in case mkvmerge genuinely hangs (a spun
+# -down drive that never wakes, AV holding the file indefinitely, etc).
+# This used to be enforced by a single blocking subprocess.run() call --
+# which meant a slow-but-healthy remux of a huge file was indistinguishable
+# from a truly hung one, and neither could be cancelled or reported on
+# until this timeout finally fired. _run_remux() below reports real
+# progress and can be interrupted well before this ceiling.
+_REMUX_TIMEOUT_SECONDS = 3600
+
+# mkvmerge's --gui-mode prints machine-readable status lines of the form
+# "#GUI#progress 42%" as it works, instead of staying silent until it
+# exits. This is what lets AudioCleaner show real per-file progress
+# during a remux instead of appearing to freeze on a large file.
+_GUI_PROGRESS_RE = re.compile(r"#GUI#progress\s+(\d+)%")
+
+
+class ProcessingCancelled(Exception):
+    """Raised by _run_remux (via process_file) when should_cancel() returns
+    True while a remux is actually in progress -- lets scanner.run_pipeline
+    stop immediately instead of only being able to cancel between files."""
+
+
+def _run_remux(
+    cmd: list[str],
+    on_progress: Optional[Callable[[float], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+    timeout_seconds: int = _REMUX_TIMEOUT_SECONDS,
+) -> tuple[int, str, bool, bool]:
+    """
+    Runs an mkvmerge command with --gui-mode and streams its stdout on a
+    background thread so this function can poll for cancellation/timeout
+    every `poll_interval` seconds *regardless* of whether mkvmerge is
+    currently producing output -- a plain blocking subprocess.run() call
+    could not be interrupted at all until it finished on its own, up to
+    the full timeout.
+
+    Returns (returncode, output_text, cancelled, timed_out). output_text
+    is mkvmerge's non-progress stdout/stderr (merged), for error messages.
+    """
+    poll_interval = 0.5
+    start = time.time()
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # merged: avoids a separate-pipe deadlock risk
+            encoding="utf-8",
+            errors="replace",
+            creationflags=_REMUX_CREATE_FLAGS,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return 127, "mkvmerge not found on PATH.", False, False
+
+    line_queue: "queue.Queue[Optional[str]]" = queue.Queue()
+
+    def _reader():
+        try:
+            for line in proc.stdout:
+                line_queue.put(line)
+        except Exception:
+            pass
+        finally:
+            line_queue.put(None)  # sentinel: stream closed
+
+    reader_thread = threading.Thread(target=_reader, daemon=True)
+    reader_thread.start()
+
+    output_lines: list[str] = []
+    cancelled = False
+    timed_out = False
+    stream_closed = False
+
+    while True:
+        try:
+            line = line_queue.get(timeout=poll_interval)
+        except queue.Empty:
+            line = ""  # nothing new this tick; fall through to the checks below
+
+        if line is None:
+            stream_closed = True
+        elif line:
+            match = _GUI_PROGRESS_RE.search(line)
+            if match:
+                if on_progress:
+                    try:
+                        on_progress(min(1.0, int(match.group(1)) / 100))
+                    except Exception:
+                        pass  # progress reporting must never abort the remux
+            elif not line.startswith("#GUI#"):
+                output_lines.append(line.rstrip("\n"))
+
+        if should_cancel and should_cancel():
+            cancelled = True
+            proc.terminate()
+            break
+        if time.time() - start > timeout_seconds:
+            timed_out = True
+            proc.terminate()
+            break
+        if stream_closed and proc.poll() is not None:
+            break
+
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass  # nothing more we can do; OS will reap it eventually
+
+    return (proc.returncode if proc.returncode is not None else -1,
+            "\n".join(output_lines), cancelled, timed_out)
 
 
 @dataclass
@@ -80,6 +200,8 @@ def process_file(
     max_safety_mode: bool = False,
     persistent_backup: bool = False,
     preferred_languages=None,
+    on_remux_progress: Optional[Callable[[float], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> ProcessResult:
     result = probe_file(path, cache=cache)
     if result.error:
@@ -189,6 +311,7 @@ def process_file(
 
     cmd = [
         mkvmerge_path,
+        "--gui-mode",  # emits "#GUI#progress N%" lines so we can report real progress
         "-o", str(temp_path),
         "--audio-tracks", ",".join(str(i) for i in keep_audio_ids),
     ]
@@ -202,37 +325,33 @@ def process_file(
             cmd += ["--no-subtitles"]
     cmd.append(str(path))
 
-    try:
-        # stdin is explicitly closed (not inherited): mkvmerge/mediainfo
-        # never read from it, and on Windows the parent's stdin handle can
-        # be invalid in some launch contexts (a windowed/console-less
-        # process, or a test runner that's redirected stdio) -- inheriting
-        # it there raises "OSError: [WinError 6] The handle is invalid"
-        # before the child process even starts.
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=3600,
-            creationflags=_REMUX_CREATE_FLAGS,
-            stdin=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        return ProcessResult(path=str(path), status="error",
-                              message="mkvmerge not found on PATH.")
-    except subprocess.TimeoutExpired:
+    # stdin is explicitly closed (not inherited): mkvmerge never reads from
+    # it, and on Windows the parent's stdin handle can be invalid in some
+    # launch contexts (a windowed/console-less process, or a test runner
+    # that's redirected stdio) -- inheriting it there raises "OSError:
+    # [WinError 6] The handle is invalid" before the child process even
+    # starts. See _run_remux() for why this isn't a plain subprocess.run().
+    returncode, output_text, cancelled, timed_out = _run_remux(
+        cmd, on_progress=on_remux_progress, should_cancel=should_cancel,
+    )
+
+    if cancelled:
+        _cleanup_temp(temp_path)
+        raise ProcessingCancelled(str(path))
+
+    if timed_out:
         _cleanup_temp(temp_path)
         return ProcessResult(path=str(path), status="error",
-                              message="mkvmerge timed out (file may be very large or hung).")
+                              message=f"mkvmerge timed out after {_REMUX_TIMEOUT_SECONDS}s "
+                                      f"(file may be very large, or the drive/antivirus is "
+                                      f"holding it) -- original untouched.",
+                              audio_decisions=audio_decisions, subtitle_decisions=subtitle_decisions, before=before)
 
-    if proc.returncode == 2 or not temp_path.exists():
+    if returncode == 2 or not temp_path.exists():
         # mkvmerge exit code 2 = error; 0 = success; 1 = warnings (still usable).
         _cleanup_temp(temp_path)
-        stderr_msg = (proc.stderr or "").strip()
-        stdout_msg = (proc.stdout or "").strip()
         return ProcessResult(path=str(path), status="error",
-                              message=f"mkvmerge failed: {stderr_msg or stdout_msg or '(no output from mkvmerge)'}",
+                              message=f"mkvmerge failed: {output_text.strip() or '(no output from mkvmerge)'}",
                               audio_decisions=audio_decisions, subtitle_decisions=subtitle_decisions, before=before)
 
     # --- Verification (pre-replacement): compare temp output against the

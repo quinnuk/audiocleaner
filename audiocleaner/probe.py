@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from .config import SCANNER_VERSION, RULES_VERSION
+from .config import SCANNER_VERSION
 
 # Suppress console window creation for subprocess calls in a windowed
 # (console=False) build -- otherwise Windows pops a new console per call.

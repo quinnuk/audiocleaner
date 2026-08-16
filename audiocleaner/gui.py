@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton, QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox,
     QGroupBox, QFormLayout, QSpinBox, QFrame, QListWidget, QCheckBox,
     QSystemTrayIcon, QMenu, QStyle, QScrollArea,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QLineEdit,
 )
 
 from .config import (
@@ -120,6 +120,10 @@ class HistoryDialog(QDialog):
         self.filter_combo.addItems([self._STATUS_DISPLAY[s] for s in self._STATUS_FILTERS])
         self.filter_combo.currentIndexChanged.connect(self._reload)
         filter_row.addWidget(self.filter_combo)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search filename or path…")
+        self.search_edit.textChanged.connect(self._reload)
+        filter_row.addWidget(self.search_edit)
         filter_row.addStretch()
         self.summary_label = QLabel("")
         filter_row.addWidget(self.summary_label)
@@ -149,9 +153,12 @@ class HistoryDialog(QDialog):
 
     def _reload(self):
         status_filter = self._STATUS_FILTERS[self.filter_combo.currentIndex()]
-        entries = self.history.recent(
-            limit=500, status_filter=None if status_filter == "All" else status_filter
-        )
+        status_filter = None if status_filter == "All" else status_filter
+        search_term = self.search_edit.text().strip()
+        if search_term:
+            entries = self.history.search(search_term, limit=500, status_filter=status_filter)
+        else:
+            entries = self.history.recent(limit=500, status_filter=status_filter)
         self.table.setRowCount(len(entries))
         for row, entry in enumerate(entries):
             name = Path(entry.path).name
@@ -1006,10 +1013,27 @@ class MainWindow(QWidget):
             subprocess.run(["xdg-open", str(log_path)])
 
     # ---------------------------------------------------------- worker callbacks
-    def _on_progress(self, done: int, total: int, filename: str, phase: str):
-        self.current_file_label.setText(f"[{phase}] {filename}")
+    def _on_progress(self, done: int, total: int, filename: str, phase: str, file_pct: int = -1):
+        label = f"[{phase}] {filename}"
+        if phase == "processing" and file_pct >= 0:
+            # Real progress on the file currently being remuxed (from
+            # mkvmerge's own --gui-mode output) -- this is what keeps a
+            # single large file from looking frozen while it's worked on.
+            label += f" — {file_pct}%"
+        self.current_file_label.setText(label)
         self.files_count_label.setText(f"{done} of {total}")
-        pct = int((done / total) * 100) if total else 0
+
+        # Scanning (quick metadata pass) gets a small slice of the bar so
+        # the processing phase -- the slow, disk-heavy part -- doesn't
+        # visually snap back to a lower percentage when it begins.
+        if total:
+            if phase == "scanning":
+                pct = int((done / total) * 20)
+            else:
+                file_fraction = max(file_pct, 0) / 100
+                pct = 20 + int((((done - 1) + file_fraction) / total) * 80)
+        else:
+            pct = 0
         self.progress_bar.setValue(pct)
 
         if phase == "processing" and self._start_time and done > 0:

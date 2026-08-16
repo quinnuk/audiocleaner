@@ -101,6 +101,7 @@ class RunLogger:
             f"Unknown audio format: {summary.unknown_codec}\n"
             f"Errors: {summary.errors}\n"
             f"Audio tracks removed: {summary.total_removed_tracks}\n"
+            f"Subtitle tracks removed: {summary.total_removed_subtitle_tracks}\n"
             f"Disk space recovered: {summary.total_bytes_saved / 1_048_576:.1f} MB\n"
             f"Elapsed: {summary.elapsed_seconds:.1f}s\n"
             "================================================\n"

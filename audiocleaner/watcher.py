@@ -105,9 +105,15 @@ def watch_iteration(
             persistent_backup=persistent_backup,
             preferred_languages=preferred_languages,
         )
-        # Mark processed regardless of outcome (including errors) so a
-        # broken file doesn't get retried forever on every poll.
-        state.mark_processed(path)
+        # Mark processed for any definitive outcome -- but NOT for "error",
+        # which is very often transient (drive still spinning up, AV
+        # briefly holding the file, a momentary mkvmerge hiccup). probe.py
+        # already avoids permanently caching that kind of failure for the
+        # same reason; leaving an errored file unmarked here means it gets
+        # a clean retry on the next poll instead of being silently ignored
+        # forever after one bad pass.
+        if result.status != "error":
+            state.mark_processed(path)
         results.append(result)
 
         if history is not None:

@@ -20,12 +20,6 @@ def _is_preferred_language(track: AudioTrackInfo, languages) -> bool:
     return track.language.lower() in languages
 
 
-def _is_english(track: AudioTrackInfo) -> bool:
-    """Back-compat wrapper: English only. Prefer _is_preferred_language
-    with an explicit language set for new code."""
-    return _is_preferred_language(track, ENGLISH_LANG_CODES)
-
-
 def is_commentary(track: AudioTrackInfo) -> bool:
     """True if a track is a commentary track. Trusts mkvmerge's own
     flag_commentary property when present; probe.py already falls back to
@@ -125,14 +119,6 @@ def select_audio_tracks_to_keep(
         extra_tracks = [t for t in commentary_tracks if t.track_id != best_track.track_id]
 
     return best_track, best_key, extra_tracks
-
-
-def select_best_english_track(
-    result: FileProbeResult,
-) -> tuple[Optional[AudioTrackInfo], Optional[str]]:
-    """Back-compat wrapper: best track only, no commentary handling."""
-    best_track, best_key, _ = select_audio_tracks_to_keep(result, keep_commentary=False)
-    return best_track, best_key
 
 
 def track_label(track: AudioTrackInfo, codec_key: Optional[str] = None) -> str:
@@ -250,34 +236,3 @@ def explain_subtitle_selection(result: FileProbeResult, keep_languages) -> list:
             reason = f"Language '{track.language}' not in the selected keep-list."
         decisions.append(SubtitleTrackDecision(track_id=track.track_id, kept=kept, label=label, reason=reason))
     return decisions
-
-
-def needs_processing(
-    result: FileProbeResult,
-    keep_commentary: bool = False,
-    subtitle_filter_enabled: bool = False,
-    subtitle_languages=None,
-    preferred_languages: Optional[set] = None,
-) -> bool:
-    """
-    A file needs processing if the audio tracks that would be kept differ
-    from what's already on disk, or (when subtitle filtering is enabled)
-    if the subtitle tracks that would be kept differ from what's on disk.
-    """
-    best_track, _key, extra_tracks = select_audio_tracks_to_keep(
-        result, keep_commentary=keep_commentary, preferred_languages=preferred_languages
-    )
-    if best_track is None:
-        return True  # no English audio at all - report as an error case upstream
-
-    keep_ids = {best_track.track_id} | {t.track_id for t in extra_tracks}
-    original_ids = {t.track_id for t in result.audio_tracks}
-    if keep_ids != original_ids:
-        return True
-
-    if subtitle_filter_enabled and result.subtitle_tracks:
-        kept_subs = select_subtitle_tracks_to_keep(result, subtitle_languages or set())
-        if {t.track_id for t in kept_subs} != {t.track_id for t in result.subtitle_tracks}:
-            return True
-
-    return False

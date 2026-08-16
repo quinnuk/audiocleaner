@@ -17,7 +17,9 @@ from .config import CACHE_FILENAME, WATCH_POLL_INTERVAL_SECONDS, WATCH_DEFAULT_S
 
 
 class CleanerWorker(QThread):
-    progress = Signal(int, int, str, str)   # files_done, files_total, filename, phase
+    # files_done, files_total, filename, phase, file_pct (-1 when n/a; 0-100
+    # while a remux is actively in progress -- see processor._run_remux)
+    progress = Signal(int, int, str, str, int)
     file_done = Signal(object)              # ProcessResult
     finished_ok = Signal(object)            # ScanSummary
     failed = Signal(str)                    # fatal error message
@@ -56,8 +58,8 @@ class CleanerWorker(QThread):
         try:
             logger = RunLogger(self.root)
 
-            def on_progress(done, total, filename, phase):
-                self.progress.emit(done, total, filename, phase)
+            def on_progress(done, total, filename, phase, file_pct=-1):
+                self.progress.emit(done, total, filename, phase, file_pct)
 
             def on_file_done(result: ProcessResult):
                 logger.log_result(result)
