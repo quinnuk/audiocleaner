@@ -145,6 +145,19 @@ class ProcessingHistory:
         cols = [d[0] for d in self._conn.execute("SELECT * FROM history LIMIT 0").description]
         return [HistoryEntry(**dict(zip(cols, row))) for row in rows]
 
+    def for_path(self, path: str, limit: int = 200) -> list:
+        """All history entries for one specific file, most recent first --
+        backs "what did AudioCleaner do to this file" in the History view.
+        Unlike search(), this is an exact match on the full path (a file
+        processed under two different paths, e.g. after a rename, will
+        only show entries recorded under the path you pass in)."""
+        rows = self._conn.execute(
+            "SELECT * FROM history WHERE path = ? ORDER BY timestamp DESC LIMIT ?",
+            (str(path), limit),
+        ).fetchall()
+        cols = [d[0] for d in self._conn.execute("SELECT * FROM history LIMIT 0").description]
+        return [HistoryEntry(**dict(zip(cols, row))) for row in rows]
+
     def library_totals(self) -> dict:
         """Aggregate across all history -- backs the Library Report (sec 27).
         Only counts non-preview, successfully cleaned entries towards space
