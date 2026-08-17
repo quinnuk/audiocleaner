@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .config import CACHE_FILENAME, MKV_EXTENSIONS
+from .config import CACHE_FILENAME, MKV_EXTENSIONS, is_own_generated_file
 from .probe import ProbeCache, probe_file
 from .processor import process_file, ProcessResult, ProcessingCancelled
 from .history import ProcessingHistory
@@ -39,6 +39,7 @@ def find_mkv_files(root: Path) -> list[Path]:
     return sorted(
         p for p in root.rglob("*")
         if p.is_file() and p.suffix.lower() in MKV_EXTENSIONS
+        and not is_own_generated_file(p)
     )
 
 
@@ -129,6 +130,22 @@ def run_pipeline(
             )
         except ProcessingCancelled:
             break  # the in-progress file's temp output was already cleaned up
+        except Exception as e:
+            # A single bad or racy file (deleted/renamed mid-scan by
+            # Radarr/Sonarr, a network-share hiccup, antivirus holding it,
+            # or any unexpected bug in the probe/codec chain) must never
+            # take the rest of the batch down with it. Without this, one
+            # unlucky file aborts run_pipeline entirely -- every file
+            # after it in this scan is silently never processed, and the
+            # only thing the caller sees is a generic "stopped
+            # unexpectedly" failure with no per-file record of what
+            # happened. Record it exactly like any other per-file error
+            # and move on, the same way the probing phase above already
+            # isolates per-file failures.
+            result = ProcessResult(
+                path=str(f), status="error",
+                message=f"Unexpected error while processing this file: {e}",
+            )
 
         summary.results.append(result)
         summary.total_scanned += 1

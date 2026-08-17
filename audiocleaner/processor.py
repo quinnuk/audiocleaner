@@ -20,6 +20,7 @@ from .codec_rank import (
     select_audio_tracks_to_keep, select_subtitle_tracks_to_keep,
     explain_audio_selection, explain_subtitle_selection,
 )
+from .config import TEMP_FILE_SUFFIX, BACKUP_FILE_SUFFIX, REMUX_TIMEOUT_SECONDS
 
 # Tolerance for container-level duration drift between input and output
 # (remuxing can shift the reported duration by a tiny amount even with no
@@ -46,7 +47,10 @@ _REMUX_CREATE_FLAGS = _NO_WINDOW | _BACKGROUND_MODE
 # from a truly hung one, and neither could be cancelled or reported on
 # until this timeout finally fired. _run_remux() below reports real
 # progress and can be interrupted well before this ceiling.
-_REMUX_TIMEOUT_SECONDS = 3600
+# Value lives in config.py (REMUX_TIMEOUT_SECONDS) so it's one obvious
+# place to tune -- was previously a hard-coded 3600s (1 hour), which is
+# too tight for very large 2160p Remux files on a slow/network drive.
+_REMUX_TIMEOUT_SECONDS = REMUX_TIMEOUT_SECONDS
 
 # mkvmerge's --gui-mode prints machine-readable status lines of the form
 # "#GUI#progress 42%" as it works, instead of staying silent until it
@@ -295,7 +299,7 @@ def process_file(
 
 
     original_size = path.stat().st_size
-    temp_path = path.with_name(path.stem + ".ac_tmp" + path.suffix)
+    temp_path = path.with_name(path.stem + TEMP_FILE_SUFFIX + path.suffix)
 
     # Clean up any stale temp file from a previous crashed run.
     if temp_path.exists():
@@ -347,8 +351,13 @@ def process_file(
                                       f"holding it) -- original untouched.",
                               audio_decisions=audio_decisions, subtitle_decisions=subtitle_decisions, before=before)
 
-    if returncode == 2 or not temp_path.exists():
-        # mkvmerge exit code 2 = error; 0 = success; 1 = warnings (still usable).
+    if returncode not in (0, 1) or not temp_path.exists():
+        # mkvmerge exit code 0 = success; 1 = warnings (still usable);
+        # 2 = error. Explicitly checking "not in (0, 1)" (rather than just
+        # "== 2") also catches a process that ended with any other exit
+        # code -- killed by the OS/antivirus, a disk-full condition, etc.
+        # -- instead of silently treating an unrecognised code as success
+        # and hoping _verify_output() below catches the bad output.
         _cleanup_temp(temp_path)
         return ProcessResult(path=str(path), status="error",
                               message=f"mkvmerge failed: {output_text.strip() or '(no output from mkvmerge)'}",
@@ -374,7 +383,7 @@ def process_file(
 
     backup_path = None
     if max_safety_mode:
-        backup_path = path.with_name(path.stem + ".ac_backup" + path.suffix)
+        backup_path = path.with_name(path.stem + BACKUP_FILE_SUFFIX + path.suffix)
         if backup_path.exists():
             try:
                 backup_path.unlink()

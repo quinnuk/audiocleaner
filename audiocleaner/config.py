@@ -105,6 +105,29 @@ LOG_BACKUP_COUNT = 2
 
 MKV_EXTENSIONS = {".mkv"}
 
+# --- AudioCleaner's own generated files ---
+# Suffixes used for the in-progress remux target (processor._run_remux)
+# and the Maximum Safety Mode backup (processor.process_file). Both keep
+# the original .mkv extension so mkvmerge/media tools still recognise
+# them -- which also means they look exactly like ordinary library files
+# to a plain suffix-based scan. Without excluding them explicitly, a
+# persistent backup (or a temp file orphaned by a crash) gets swept back
+# up by the very next scan and treated as a brand new file to clean,
+# silently stripping tracks from what was supposed to be an untouched
+# safety copy. These constants exist so every glob (scanner.py,
+# watcher.py) excludes them the same way, instead of each one needing to
+# remember the exact suffixes independently.
+TEMP_FILE_SUFFIX = ".ac_tmp"
+BACKUP_FILE_SUFFIX = ".ac_backup"
+
+
+def is_own_generated_file(path) -> bool:
+    """True if `path` is a temp or backup file AudioCleaner itself
+    creates while processing -- and therefore must never be treated as a
+    library file to scan/clean in its own right."""
+    stem = path.stem
+    return stem.endswith(TEMP_FILE_SUFFIX) or stem.endswith(BACKUP_FILE_SUFFIX)
+
 # --- Watch mode ---
 # How often the watcher re-scans the folder tree for new/changed files.
 WATCH_POLL_INTERVAL_SECONDS = 15
@@ -114,3 +137,15 @@ WATCH_POLL_INTERVAL_SECONDS = 15
 # default (matches the "wait a minute or two" guidance for Radarr/Sonarr
 # moving files into the library folder).
 WATCH_DEFAULT_SETTLE_SECONDS = 120
+
+# --- Remux timeout ---
+# Hard ceiling on a single mkvmerge remux (processor._run_remux), in case
+# mkvmerge genuinely hangs (a spun-down drive that never wakes, AV holding
+# the file indefinitely, etc). This used to be a plain constant hard-coded
+# in processor.py at 3600s (1 hour) -- too tight for very large 2160p
+# Remux files (80-100GB+) on a slow, network, or external drive, where a
+# lossless copy-remux can legitimately take longer than an hour with
+# nothing actually wrong. Raised to 3 hours and moved here so it's a
+# single obvious place to tune per-library, rather than a magic number
+# buried in the remux implementation.
+REMUX_TIMEOUT_SECONDS = 10800

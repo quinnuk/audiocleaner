@@ -22,7 +22,7 @@ import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QTextCursor, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -68,6 +68,138 @@ def _language_label(code: str) -> str:
 # and ask it to show itself, instead of starting a second copy that could
 # end up watching/remuxing the same folder at the same time.
 _SINGLE_INSTANCE_SERVER_NAME = f"{APP_NAME}-SingleInstance"
+
+# AudioCleaner visual theme. The palette is deliberately derived from the
+# bundled icon: midnight navy/purple surfaces, electric cyan for primary
+# actions, and a small amount of warm gold for attention/warnings.
+THEME_QSS = r"""
+QWidget {
+    background: #0f1326;
+    color: #eef2ff;
+    font-family: "Segoe UI";
+    font-size: 10pt;
+}
+QMainWindow, QDialog { background: #0f1326; }
+QLabel { color: #eef2ff; }
+QLabel[role="muted"] { color: #9aa6c7; }
+QLabel[role="heading"] { color: #ffffff; font-size: 15pt; font-weight: 700; }
+QLabel[role="subheading"] { color: #9aa6c7; font-size: 9pt; }
+
+QFrame#header {
+    background: #181d38;
+    border: 1px solid #2b335b;
+    border-radius: 14px;
+}
+QFrame#statusStrip {
+    background: #151a31;
+    border: 1px solid #2b335b;
+    border-radius: 10px;
+}
+
+QScrollArea#controlScroll {
+    background: #0f1326;
+    border: none;
+}
+QWidget#controlsPanel { background: transparent; }
+QLabel#headerBadge {
+    color: #65dfff;
+    background: #123448;
+    border: 1px solid #28617a;
+    border-radius: 8px;
+    padding: 5px 9px;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QLabel[role="summary"] {
+    color: #b9c8f0;
+    background: #151a31;
+    border: 1px solid #2b335b;
+    border-radius: 7px;
+    padding: 7px 9px;
+}
+
+QGroupBox {
+    background: #181d38;
+    border: 1px solid #2b335b;
+    border-radius: 12px;
+    margin-top: 12px;
+    padding: 16px 12px 12px 12px;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 14px;
+    padding: 2px 8px;
+    color: #cbd4f5;
+    background: #181d38;
+}
+
+QListWidget, QPlainTextEdit, QLineEdit, QComboBox, QSpinBox, QTableWidget, QScrollArea {
+    background: #0d1122;
+    color: #eef2ff;
+    border: 1px solid #30385f;
+    border-radius: 9px;
+    selection-background-color: #3b2a73;
+    selection-color: #ffffff;
+}
+QListWidget, QPlainTextEdit { padding: 7px; }
+QListWidget::item { padding: 7px; border-radius: 6px; }
+QListWidget::item:selected { background: #30255e; border: 1px solid #6650b5; }
+QPlainTextEdit { font-family: "Cascadia Mono", "Consolas"; font-size: 9pt; }
+QLineEdit, QComboBox, QSpinBox { padding: 7px 9px; min-height: 18px; }
+QComboBox QAbstractItemView { background: #181d38; color: #eef2ff; selection-background-color: #3b2a73; }
+
+QPushButton {
+    background: #252c4c;
+    color: #eef2ff;
+    border: 1px solid #3a446e;
+    border-radius: 8px;
+    padding: 8px 14px;
+    min-height: 18px;
+    font-weight: 600;
+}
+QPushButton:hover { background: #30385e; border-color: #6472aa; }
+QPushButton:pressed { background: #1d2340; }
+QPushButton:disabled { color: #68718f; background: #171b30; border-color: #252b47; }
+QPushButton#primary { background: #20b9e8; color: #07111d; border-color: #5cdbff; font-weight: 700; }
+QPushButton#primary:hover { background: #49cdf2; }
+QPushButton#watch { background: #6240b5; color: #ffffff; border-color: #8868dc; font-weight: 700; }
+QPushButton#watch:hover { background: #7552ce; }
+QPushButton#watch:checked { background: #2fbd83; border-color: #62e3ad; color: #071b13; }
+QPushButton#danger { background: #512534; color: #ffdbe0; border-color: #8b3e50; }
+QPushButton#danger:hover { background: #6b2d40; }
+QPushButton#secondary { background: #202746; }
+QPushButton#accent { background: #3b2a73; border-color: #6851b8; }
+
+QCheckBox { spacing: 9px; color: #dfe5fb; padding: 3px 0; }
+QCheckBox::indicator { width: 18px; height: 18px; border-radius: 5px; border: 1px solid #596587; background: #0d1122; }
+QCheckBox::indicator:hover { border-color: #7f8fbd; }
+QCheckBox::indicator:checked { background: #20b9e8; border-color: #5cdbff; image: none; }
+QCheckBox::indicator:disabled { background: #171b30; border-color: #343b58; }
+
+QProgressBar {
+    background: #0b0f1e;
+    border: 1px solid #30385f;
+    border-radius: 7px;
+    text-align: center;
+    color: #eef2ff;
+    min-height: 16px;
+}
+QProgressBar::chunk { background: #20b9e8; border-radius: 6px; }
+
+QScrollBar:vertical { background: #11162a; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: #394267; min-height: 25px; border-radius: 5px; }
+QScrollBar::handle:vertical:hover { background: #52608d; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0px; }
+
+QHeaderView::section { background: #202746; color: #cbd4f5; padding: 7px; border: none; border-bottom: 1px solid #343d66; font-weight: 600; }
+QTableWidget { gridline-color: #252c49; }
+
+QFrame#dependencyBanner { background: #302815; border: 1px solid #765d2c; border-radius: 10px; }
+QLabel#dependencyTitle { color: #ffd978; font-weight: 700; }
+
+QToolTip { background: #202746; color: #ffffff; border: 1px solid #58658e; padding: 5px; }
+"""
 
 # Colour used for each result status in the status log (None = default
 # text colour, used for plain informational lines like heartbeats).
@@ -206,7 +338,12 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(680, 600)
+        # The interface is deliberately wide rather than tall: controls stay in a
+        # comfortable left column while progress/log information gets the flexible
+        # space on the right.  This also prevents buttons from becoming stretched
+        # across a maximised window.
+        self.resize(1120, 720)
+        self.setMinimumSize(900, 620)
 
         icon_path = _icon_path()
         if icon_path:
@@ -247,106 +384,191 @@ class MainWindow(QWidget):
 
     # ---------------------------------------------------------- UI layout
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        """Build a compact two-column desktop layout.
 
-        # Dependency warning banner (hidden unless something is missing)
+        The previous design put every section underneath the next one, which made
+        the application unnecessarily tall.  The new layout keeps configuration
+        controls in a scrollable left column and gives the live progress/status
+        area the larger, flexible right column.  The left column has a controlled
+        width so maximising the window does not turn buttons into giant, thin bars.
+        """
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        # ---------------------------------------------------------- branded header
+        header = QFrame()
+        header.setObjectName("header")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 9, 14, 9)
+        icon_path = _icon_path()
+        if icon_path:
+            icon_label = QLabel()
+            icon_label.setPixmap(QPixmap(icon_path).scaled(
+                44, 44, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            ))
+            header_layout.addWidget(icon_label)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(1)
+        title = QLabel(APP_NAME)
+        title.setProperty("role", "heading")
+        subtitle = QLabel("Clean your media library without the guesswork")
+        subtitle.setProperty("role", "subheading")
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        header_layout.addLayout(title_col)
+        header_layout.addStretch()
+        badge = QLabel("MEDIA TOOL")
+        badge.setObjectName("headerBadge")
+        header_layout.addWidget(badge)
+        root.addWidget(header)
+
+        # ------------------------------------------------------ dependency banner
         self.dep_banner = QFrame()
-        self.dep_banner.setFrameShape(QFrame.StyledPanel)
-        self.dep_banner.setStyleSheet(
-            "QFrame { background-color: #fff3cd; border: 1px solid #e0c265; border-radius: 4px; }"
-        )
+        self.dep_banner.setObjectName("dependencyBanner")
         dep_layout = QVBoxLayout(self.dep_banner)
+        dep_layout.setContentsMargins(12, 8, 12, 8)
+        dep_layout.setSpacing(5)
         self.dep_title = QLabel("")
         self.dep_title.setWordWrap(True)
-        self.dep_title.setStyleSheet("font-weight: bold;")
+        self.dep_title.setObjectName("dependencyTitle")
         dep_layout.addWidget(self.dep_title)
-        self.dep_buttons_row = QVBoxLayout()
+        self.dep_buttons_row = QHBoxLayout()
+        self.dep_buttons_row.setSpacing(7)
         dep_layout.addLayout(self.dep_buttons_row)
         recheck_row = QHBoxLayout()
         self.dep_recheck_btn = QPushButton("I've installed them — Check Again")
+        self.dep_recheck_btn.setObjectName("secondary")
         self.dep_recheck_btn.clicked.connect(self._check_dependencies)
+        self.dep_recheck_btn.setMaximumWidth(240)
         recheck_row.addWidget(self.dep_recheck_btn)
         recheck_row.addStretch()
         dep_layout.addLayout(recheck_row)
         self.dep_banner.setVisible(False)
-        layout.addWidget(self.dep_banner)
+        root.addWidget(self.dep_banner)
 
-        # Folder list
-        layout.addWidget(QLabel("Folders to clean / watch (any number, don't need to be related):"))
+        # -------------------------------------------------------------- main area
+        main_split = QHBoxLayout()
+        main_split.setSpacing(12)
+        root.addLayout(main_split, stretch=1)
+
+        # A scrollable control column keeps the application usable on smaller
+        # screens while remaining visually compact on a large/maximised window.
+        control_scroll = QScrollArea()
+        control_scroll.setObjectName("controlScroll")
+        control_scroll.setWidgetResizable(True)
+        control_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        control_scroll.setMinimumWidth(455)
+        control_scroll.setMaximumWidth(560)
+
+        controls = QWidget()
+        controls.setObjectName("controlsPanel")
+        control_layout = QVBoxLayout(controls)
+        control_layout.setContentsMargins(2, 2, 8, 2)
+        control_layout.setSpacing(9)
+
+        # --------------------------------------------------------------- folders
+        folders_box = QGroupBox("Folders")
+        folders_layout = QVBoxLayout(folders_box)
+        folders_layout.setContentsMargins(10, 16, 10, 10)
+        folders_layout.setSpacing(7)
+        folder_hint = QLabel("Folders to clean or watch. They do not need a shared parent.")
+        folder_hint.setProperty("role", "muted")
+        folder_hint.setWordWrap(True)
+        folders_layout.addWidget(folder_hint)
+
         self.folder_list = QListWidget()
-        self.folder_list.setMaximumHeight(120)
-        layout.addWidget(self.folder_list)
+        self.folder_list.setMinimumHeight(95)
+        self.folder_list.setMaximumHeight(150)
+        folders_layout.addWidget(self.folder_list)
 
         folder_btn_row = QHBoxLayout()
-        add_btn = QPushButton("Add Folder…")
+        folder_btn_row.setSpacing(7)
+        add_btn = QPushButton("＋  Add Folder…")
+        add_btn.setObjectName("primary")
         add_btn.clicked.connect(self._on_add_folder)
         self.remove_btn = QPushButton("Remove Selected")
+        self.remove_btn.setObjectName("secondary")
         self.remove_btn.clicked.connect(self._on_remove_folder)
         folder_btn_row.addWidget(add_btn)
         folder_btn_row.addWidget(self.remove_btn)
-        folder_btn_row.addStretch()
-        layout.addLayout(folder_btn_row)
+        folders_layout.addLayout(folder_btn_row)
+        control_layout.addWidget(folders_box)
 
-        # Start / Cancel row
+        # ------------------------------------------------------------- main actions
+        actions_box = QGroupBox("Actions")
+        actions_layout = QVBoxLayout(actions_box)
+        actions_layout.setContentsMargins(10, 16, 10, 10)
+        actions_layout.setSpacing(8)
+
         action_row = QHBoxLayout()
-        self.start_btn = QPushButton("Start")
+        action_row.setSpacing(8)
+        self.start_btn = QPushButton("▶  Start Cleaning")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.setMinimumHeight(40)
         self.start_btn.clicked.connect(self._on_start)
         self.start_btn.setEnabled(False)
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton("■  Cancel")
+        self.cancel_btn.setObjectName("danger")
+        self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.cancel_btn.setEnabled(False)
-        action_row.addWidget(self.start_btn)
-        action_row.addWidget(self.cancel_btn)
-        layout.addLayout(action_row)
+        action_row.addWidget(self.start_btn, 3)
+        action_row.addWidget(self.cancel_btn, 2)
+        actions_layout.addLayout(action_row)
 
-        preview_row = QHBoxLayout()
         self.preview_check = QCheckBox(
             "Preview Only — show what would happen, don't modify any files"
         )
         self.preview_check.toggled.connect(self._save_preview_setting)
-        preview_row.addWidget(self.preview_check)
-        preview_row.addStretch()
-        layout.addLayout(preview_row)
+        actions_layout.addWidget(self.preview_check)
 
-        # Watch mode row
         watch_row = QHBoxLayout()
-        self.watch_btn = QPushButton("Start Watching All Folders")
+        watch_row.setSpacing(7)
+        self.watch_btn = QPushButton("◉  Start Watching All Folders")
+        self.watch_btn.setObjectName("watch")
         self.watch_btn.setCheckable(True)
+        self.watch_btn.setMinimumHeight(38)
         self.watch_btn.clicked.connect(self._on_toggle_watch)
         self.watch_btn.setEnabled(False)
+        watch_row.addWidget(self.watch_btn, 1)
+        watch_label = QLabel("Wait:")
+        watch_label.setProperty("role", "muted")
+        watch_row.addWidget(watch_label)
         self.settle_spin = QSpinBox()
         self.settle_spin.setRange(10, 3600)
         self.settle_spin.setSingleStep(10)
         self.settle_spin.setValue(WATCH_DEFAULT_SETTLE_SECONDS)
         self.settle_spin.setSuffix(" s")
+        self.settle_spin.setFixedWidth(82)
         self.settle_spin.valueChanged.connect(self._save_settle)
-        watch_row.addWidget(self.watch_btn)
-        watch_row.addWidget(QLabel("Wait for new files to finish copying:"))
         watch_row.addWidget(self.settle_spin)
         watch_row.addStretch()
-        layout.addLayout(watch_row)
+        actions_layout.addLayout(watch_row)
 
-        # Startup behaviour row
-        startup_row = QHBoxLayout()
         self.autostart_check = QCheckBox(
             "Start with Windows (minimised to tray, auto-watch saved folders)"
         )
         self.autostart_check.setChecked(autostart.is_enabled())
         self.autostart_check.toggled.connect(self._on_toggle_autostart)
-        startup_row.addWidget(self.autostart_check)
-        startup_row.addStretch()
-        layout.addLayout(startup_row)
+        actions_layout.addWidget(self.autostart_check)
+        control_layout.addWidget(actions_box)
 
-        # Safety options
-        safety_box = QGroupBox("Safety Options")
-        safety_layout = QVBoxLayout()
+        # ----------------------------------------------------------- safety options
+        safety_box = QGroupBox("Safety & History")
+        safety_layout = QVBoxLayout(safety_box)
+        safety_layout.setContentsMargins(10, 16, 10, 10)
+        safety_layout.setSpacing(6)
 
         self.max_safety_check = QCheckBox(
-            "Maximum Safety Mode — keep a full backup until the replaced file is "
-            "re-verified; auto-restore the original if that check fails"
+            "Maximum Safety Mode — keep a full backup until the replacement is re-verified"
         )
         self.max_safety_check.setChecked(DEFAULT_MAX_SAFETY_MODE)
         self.max_safety_check.toggled.connect(self._save_safety_options)
+        self.max_safety_check.setToolTip(
+            "Keeps a recoverable original until the cleaned file passes verification."
+        )
         safety_layout.addWidget(self.max_safety_check)
 
         self.persistent_backup_check = QCheckBox(
@@ -357,48 +579,46 @@ class MainWindow(QWidget):
         self.persistent_backup_check.toggled.connect(self._save_safety_options)
         safety_layout.addWidget(self.persistent_backup_check)
 
-        rebuild_row = QHBoxLayout()
+        utility_row = QHBoxLayout()
+        utility_row.setSpacing(7)
         self.rebuild_cache_btn = QPushButton("Rebuild Cache…")
+        self.rebuild_cache_btn.setObjectName("secondary")
         self.rebuild_cache_btn.clicked.connect(self._on_rebuild_cache)
-        rebuild_row.addWidget(self.rebuild_cache_btn)
-        rebuild_row.addWidget(QLabel(
-            "Forces every selected folder to be re-analysed from scratch on the next run. "
-            "Does not modify any media file."
-        ))
-        rebuild_row.addStretch()
-        safety_layout.addLayout(rebuild_row)
-
-        history_row = QHBoxLayout()
         self.history_btn = QPushButton("Processing History…")
+        self.history_btn.setObjectName("accent")
         self.history_btn.clicked.connect(self._on_show_history)
-        history_row.addWidget(self.history_btn)
-        history_row.addWidget(QLabel("What AudioCleaner has done, across every folder and run."))
-        history_row.addStretch()
-        safety_layout.addLayout(history_row)
+        utility_row.addWidget(self.rebuild_cache_btn)
+        utility_row.addWidget(self.history_btn)
+        safety_layout.addLayout(utility_row)
+        safety_note = QLabel("Cache rebuild re-analyses the selected folders; History shows previous runs.")
+        safety_note.setProperty("role", "muted")
+        safety_note.setWordWrap(True)
+        safety_layout.addWidget(safety_note)
+        control_layout.addWidget(safety_box)
 
-        safety_box.setLayout(safety_layout)
-        layout.addWidget(safety_box)
-
-        # Audio & subtitle options
-        options_box = QGroupBox("Audio && Subtitle Options")
-        options_layout = QVBoxLayout()
+        # ------------------------------------------------------- audio/subtitle options
+        options_box = QGroupBox("Audio & Subtitle Options")
+        options_layout = QVBoxLayout(options_box)
+        options_layout.setContentsMargins(10, 16, 10, 10)
+        options_layout.setSpacing(6)
 
         self.keep_commentary_check = QCheckBox(
-            "Keep commentary tracks (default: removed like any other extra audio track)"
+            "Keep commentary tracks (otherwise remove extra audio tracks)"
         )
         self.keep_commentary_check.setChecked(DEFAULT_KEEP_COMMENTARY)
         self.keep_commentary_check.toggled.connect(self._save_audio_subtitle_options)
         options_layout.addWidget(self.keep_commentary_check)
 
         self.subtitle_filter_check = QCheckBox(
-            "Also clean subtitle tracks (keep only checked languages below, plus any Forced tracks)"
+            "Also clean subtitle tracks (keep checked languages + Forced tracks)"
         )
         self.subtitle_filter_check.setChecked(DEFAULT_SUBTITLE_FILTER_ENABLED)
         self.subtitle_filter_check.toggled.connect(self._on_toggle_subtitle_filter)
         options_layout.addWidget(self.subtitle_filter_check)
 
         scan_row = QHBoxLayout()
-        self.scan_languages_btn = QPushButton("Scan Folders for Subtitle Languages…")
+        self.scan_languages_btn = QPushButton("Scan Subtitle Languages…")
+        self.scan_languages_btn.setObjectName("accent")
         self.scan_languages_btn.clicked.connect(self._on_scan_languages)
         scan_row.addWidget(self.scan_languages_btn)
         scan_row.addStretch()
@@ -406,28 +626,40 @@ class MainWindow(QWidget):
 
         self.lang_scroll = QScrollArea()
         self.lang_scroll.setWidgetResizable(True)
-        self.lang_scroll.setMaximumHeight(110)
+        self.lang_scroll.setMinimumHeight(70)
+        self.lang_scroll.setMaximumHeight(120)
         self.lang_checklist_widget = QWidget()
         self.lang_checklist_layout = QVBoxLayout(self.lang_checklist_widget)
         self.lang_checklist_placeholder = QLabel(
-            "Scan folders above to see which subtitle languages are actually present."
+            "Scan folders above to see subtitle languages present."
         )
-        self.lang_checklist_placeholder.setStyleSheet("color: #666;")
+        self.lang_checklist_placeholder.setProperty("role", "muted")
+        self.lang_checklist_placeholder.setWordWrap(True)
         self.lang_checklist_layout.addWidget(self.lang_checklist_placeholder)
         self.lang_checklist_layout.addStretch()
         self.lang_scroll.setWidget(self.lang_checklist_widget)
         options_layout.addWidget(self.lang_scroll)
+        control_layout.addWidget(options_box)
 
-        options_box.setLayout(options_layout)
-        layout.addWidget(options_box)
-        self._update_subtitle_controls_enabled()
+        control_layout.addStretch()
+        control_scroll.setWidget(controls)
+        main_split.addWidget(control_scroll)
 
-        # Progress group
-        progress_box = QGroupBox("Progress")
-        progress_layout = QFormLayout()
+        # ----------------------------------------------------------- live monitor
+        monitor = QWidget()
+        monitor_layout = QVBoxLayout(monitor)
+        monitor_layout.setContentsMargins(0, 0, 0, 0)
+        monitor_layout.setSpacing(9)
+
+        progress_box = QGroupBox("Live Progress")
+        progress_layout = QFormLayout(progress_box)
+        progress_layout.setContentsMargins(10, 16, 10, 10)
+        progress_layout.setVerticalSpacing(7)
         self.current_folder_label = QLabel("—")
+        self.current_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.current_file_label = QLabel("—")
         self.current_file_label.setWordWrap(True)
+        self.current_file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.files_count_label = QLabel("0 of 0")
@@ -436,29 +668,35 @@ class MainWindow(QWidget):
         progress_layout.addRow("Current file:", self.current_file_label)
         progress_layout.addRow("Progress:", self.progress_bar)
         progress_layout.addRow("Files processed:", self.files_count_label)
-        progress_layout.addRow("Estimated time remaining:", self.eta_label)
-        progress_box.setLayout(progress_layout)
-        layout.addWidget(progress_box)
+        progress_layout.addRow("Time remaining:", self.eta_label)
+        monitor_layout.addWidget(progress_box)
 
-        # Status window
-        layout.addWidget(QLabel("Status:"))
+        status_box_frame = QGroupBox("Status & Activity")
+        status_layout = QVBoxLayout(status_box_frame)
+        status_layout.setContentsMargins(10, 16, 10, 10)
+        status_layout.setSpacing(7)
         self.status_box = QPlainTextEdit()
         self.status_box.setReadOnly(True)
-        layout.addWidget(self.status_box, stretch=1)
-
-        # Completion summary
+        status_layout.addWidget(self.status_box, stretch=1)
         self.summary_label = QLabel("")
         self.summary_label.setWordWrap(True)
-        layout.addWidget(self.summary_label)
+        self.summary_label.setProperty("role", "summary")
+        status_layout.addWidget(self.summary_label)
+        monitor_layout.addWidget(status_box_frame, stretch=1)
 
-        # Open log button
         bottom_row = QHBoxLayout()
-        self.open_log_btn = QPushButton("Open Log (selected folder)")
+        bottom_row.addStretch()
+        self.open_log_btn = QPushButton("Open Log  ↗")
+        self.open_log_btn.setObjectName("secondary")
         self.open_log_btn.clicked.connect(self._on_open_log)
         self.open_log_btn.setEnabled(False)
-        bottom_row.addStretch()
+        self.open_log_btn.setMinimumWidth(125)
         bottom_row.addWidget(self.open_log_btn)
-        layout.addLayout(bottom_row)
+        monitor_layout.addLayout(bottom_row)
+
+        main_split.addWidget(monitor, stretch=1)
+
+        self._update_subtitle_controls_enabled()
 
     def _check_dependencies(self):
         missing = get_missing_tools()
@@ -1121,6 +1359,7 @@ def main():
     app.setOrganizationName(APP_NAME)
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)  # keep running when hidden to tray
+    app.setStyleSheet(THEME_QSS)
     icon_path = _icon_path()
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))

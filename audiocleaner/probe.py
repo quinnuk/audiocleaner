@@ -291,7 +291,25 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
         if cached is not None:
             return cached
 
-    stat = path.stat()
+    try:
+        stat = path.stat()
+    except OSError as e:
+        # The file existed when this scan started (it had to, to be in
+        # `files`), but has since vanished, been renamed, or moved -- most
+        # commonly Radarr/Sonarr replacing it with an upgrade, or a
+        # network/removable drive briefly dropping, during a long-running
+        # scan. Report this as a clean, specific result instead of letting
+        # a raw OSError ("[WinError 3] The system cannot find the path
+        # specified") bubble all the way up to scanner.py's generic
+        # exception handler, which produced a confusing "Unexpected error"
+        # message with no indication of what actually happened.
+        result = FileProbeResult(path=str(path), size=0, mtime=0)
+        result.error = (
+            f"File is no longer at this path (moved, renamed, or deleted "
+            f"since the scan started): {e}"
+        )
+        return result
+
     result = FileProbeResult(path=str(path), size=stat.st_size, mtime=stat.st_mtime)
 
     mkvmerge_path = find_tool("mkvmerge")

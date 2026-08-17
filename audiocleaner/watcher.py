@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .config import MKV_EXTENSIONS
+from .config import MKV_EXTENSIONS, is_own_generated_file
 from .probe import ProbeCache
 from .processor import process_file, ProcessResult
 from .history import ProcessingHistory
@@ -85,6 +85,7 @@ def watch_iteration(
     for path in sorted(
         p for p in root.rglob("*")
         if p.is_file() and p.suffix.lower() in MKV_EXTENSIONS
+        and not is_own_generated_file(p)
     ):
         if state.already_processed(path):
             continue
@@ -96,15 +97,27 @@ def watch_iteration(
         if not state.is_settled(path, settle_seconds):
             continue  # still copying (or just arrived) -- wait
 
-        result = process_file(
-            path, cache=cache,
-            keep_commentary=keep_commentary,
-            subtitle_filter_enabled=subtitle_filter_enabled,
-            subtitle_languages=subtitle_languages,
-            max_safety_mode=max_safety_mode,
-            persistent_backup=persistent_backup,
-            preferred_languages=preferred_languages,
-        )
+        try:
+            result = process_file(
+                path, cache=cache,
+                keep_commentary=keep_commentary,
+                subtitle_filter_enabled=subtitle_filter_enabled,
+                subtitle_languages=subtitle_languages,
+                max_safety_mode=max_safety_mode,
+                persistent_backup=persistent_backup,
+                preferred_languages=preferred_languages,
+            )
+        except Exception as e:
+            # A single bad/racy file must never kill the whole watch
+            # session. Without this, an uncaught exception here propagates
+            # all the way up through WatchWorker.run() (or cli.py's watch
+            # loop), which stops watching entirely and requires a manual
+            # restart -- the file that happened to trip it looks totally
+            # unrelated to the user, since watch mode just silently died.
+            result = ProcessResult(
+                path=str(path), status="error",
+                message=f"Unexpected error while processing this file: {e}",
+            )
         # Mark processed for any definitive outcome -- but NOT for "error",
         # which is very often transient (drive still spinning up, AV
         # briefly holding the file, a momentary mkvmerge hiccup). probe.py
