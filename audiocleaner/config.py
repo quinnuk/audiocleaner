@@ -137,15 +137,3 @@ WATCH_POLL_INTERVAL_SECONDS = 15
 # default (matches the "wait a minute or two" guidance for Radarr/Sonarr
 # moving files into the library folder).
 WATCH_DEFAULT_SETTLE_SECONDS = 120
-
-# --- Remux timeout ---
-# Hard ceiling on a single mkvmerge remux (processor._run_remux), in case
-# mkvmerge genuinely hangs (a spun-down drive that never wakes, AV holding
-# the file indefinitely, etc). This used to be a plain constant hard-coded
-# in processor.py at 3600s (1 hour) -- too tight for very large 2160p
-# Remux files (80-100GB+) on a slow, network, or external drive, where a
-# lossless copy-remux can legitimately take longer than an hour with
-# nothing actually wrong. Raised to 3 hours and moved here so it's a
-# single obvious place to tune per-library, rather than a magic number
-# buried in the remux implementation.
-REMUX_TIMEOUT_SECONDS = 10800

@@ -20,7 +20,7 @@ from .codec_rank import (
     select_audio_tracks_to_keep, select_subtitle_tracks_to_keep,
     explain_audio_selection, explain_subtitle_selection,
 )
-from .config import TEMP_FILE_SUFFIX, BACKUP_FILE_SUFFIX, REMUX_TIMEOUT_SECONDS
+from .config import TEMP_FILE_SUFFIX, BACKUP_FILE_SUFFIX
 
 # Tolerance for container-level duration drift between input and output
 # (remuxing can shift the reported duration by a tiny amount even with no
@@ -47,10 +47,25 @@ _REMUX_CREATE_FLAGS = _NO_WINDOW | _BACKGROUND_MODE
 # from a truly hung one, and neither could be cancelled or reported on
 # until this timeout finally fired. _run_remux() below reports real
 # progress and can be interrupted well before this ceiling.
-# Value lives in config.py (REMUX_TIMEOUT_SECONDS) so it's one obvious
-# place to tune -- was previously a hard-coded 3600s (1 hour), which is
-# too tight for very large 2160p Remux files on a slow/network drive.
-_REMUX_TIMEOUT_SECONDS = REMUX_TIMEOUT_SECONDS
+#
+# There used to be just one flat 3600s (1h) wall-clock cap from the start
+# of the remux, with no way to tell "genuinely stuck" apart from "just
+# slow". A 4K remux with lossless TrueHD/Atmos tracks is easily 60-100+ GB;
+# on an external/network drive, under antivirus scanning, or with a
+# concurrent Plex read from the same disk, that can legitimately take well
+# over an hour and still be making steady progress the whole time. Killing
+# it there discarded real, in-progress work.
+#
+# So there are now two separate checks:
+#   - a STALL timeout: if mkvmerge's own reported progress hasn't
+#     advanced *at all* for this long, it's genuinely stuck (this is the
+#     one that actually fires in normal operation, whether the file is
+#     1 GB or 100 GB)
+#   - an ABSOLUTE timeout: a generous backstop in case something produces
+#     nonstop-but-meaningless progress output forever, or no progress
+#     output at all for the whole run
+_REMUX_STALL_TIMEOUT_SECONDS = 20 * 60      # 20 min with zero progress movement
+_REMUX_ABSOLUTE_TIMEOUT_SECONDS = 6 * 3600  # 6h backstop regardless of progress
 
 # mkvmerge's --gui-mode prints machine-readable status lines of the form
 # "#GUI#progress 42%" as it works, instead of staying silent until it
@@ -69,7 +84,8 @@ def _run_remux(
     cmd: list[str],
     on_progress: Optional[Callable[[float], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
-    timeout_seconds: int = _REMUX_TIMEOUT_SECONDS,
+    timeout_seconds: int = _REMUX_ABSOLUTE_TIMEOUT_SECONDS,
+    stall_timeout_seconds: int = _REMUX_STALL_TIMEOUT_SECONDS,
 ) -> tuple[int, str, bool, bool]:
     """
     Runs an mkvmerge command with --gui-mode and streams its stdout on a
@@ -79,11 +95,18 @@ def _run_remux(
     could not be interrupted at all until it finished on its own, up to
     the full timeout.
 
+    Two independent timeouts apply: `stall_timeout_seconds` fires if
+    mkvmerge's own reported progress hasn't advanced at all for that long
+    (this is what actually catches a genuinely hung process, regardless of
+    file size), and `timeout_seconds` is a generous absolute backstop.
+
     Returns (returncode, output_text, cancelled, timed_out). output_text
     is mkvmerge's non-progress stdout/stderr (merged), for error messages.
     """
     poll_interval = 0.5
     start = time.time()
+    last_progress_pct = -1
+    last_progress_time = start
 
     try:
         proc = subprocess.Popen(
@@ -128,9 +151,18 @@ def _run_remux(
         elif line:
             match = _GUI_PROGRESS_RE.search(line)
             if match:
+                pct = int(match.group(1))
+                if pct > last_progress_pct:
+                    # Real forward movement -- reset the stall clock. A
+                    # huge file sitting at the same percentage for a long
+                    # stretch (spun-down drive, AV holding it) is exactly
+                    # what this is meant to catch; one that's merely slow
+                    # keeps ticking pct upward and never trips it.
+                    last_progress_pct = pct
+                    last_progress_time = time.time()
                 if on_progress:
                     try:
-                        on_progress(min(1.0, int(match.group(1)) / 100))
+                        on_progress(min(1.0, pct / 100))
                     except Exception:
                         pass  # progress reporting must never abort the remux
             elif not line.startswith("#GUI#"):
@@ -140,7 +172,12 @@ def _run_remux(
             cancelled = True
             proc.terminate()
             break
-        if time.time() - start > timeout_seconds:
+        now = time.time()
+        if now - start > timeout_seconds:
+            timed_out = True
+            proc.terminate()
+            break
+        if now - last_progress_time > stall_timeout_seconds:
             timed_out = True
             proc.terminate()
             break
@@ -346,9 +383,12 @@ def process_file(
     if timed_out:
         _cleanup_temp(temp_path)
         return ProcessResult(path=str(path), status="error",
-                              message=f"mkvmerge timed out after {_REMUX_TIMEOUT_SECONDS}s "
-                                      f"(file may be very large, or the drive/antivirus is "
-                                      f"holding it) -- original untouched.",
+                              message=f"mkvmerge made no progress for over "
+                                      f"{_REMUX_STALL_TIMEOUT_SECONDS // 60} minutes (or ran past "
+                                      f"the {_REMUX_ABSOLUTE_TIMEOUT_SECONDS // 3600}h absolute limit) "
+                                      f"-- the drive or antivirus may be holding the file, or it may "
+                                      f"be genuinely stuck. A large file that's still making steady "
+                                      f"progress is not affected by this. Original untouched.",
                               audio_decisions=audio_decisions, subtitle_decisions=subtitle_decisions, before=before)
 
     if returncode not in (0, 1) or not temp_path.exists():

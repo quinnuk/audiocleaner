@@ -130,14 +130,30 @@ def run_pipeline(
             )
         except ProcessingCancelled:
             break  # the in-progress file's temp output was already cleaned up
+        except FileNotFoundError as e:
+            # The file (or its containing folder) disappeared between being
+            # listed at the start of this scan and being reached here --
+            # almost always Radarr/Sonarr renaming or moving it mid-scan
+            # (e.g. an upgrade import), not a real problem with AudioCleaner
+            # or the file itself. Reported with a specific, reassuring
+            # message instead of a raw WinError/errno dump, and *not*
+            # counted as a scary failure the way a genuine mkvmerge error
+            # is -- a rescan will simply pick the file up at its new
+            # location/name.
+            result = ProcessResult(
+                path=str(f), status="error",
+                message="This file (or its folder) is no longer at this location -- "
+                        "most likely renamed or moved by other software (Radarr/Sonarr "
+                        "import, an antivirus quarantine, etc.) while this scan was "
+                        f"running. It will be picked up correctly on the next scan. ({e})",
+            )
         except Exception as e:
-            # A single bad or racy file (deleted/renamed mid-scan by
-            # Radarr/Sonarr, a network-share hiccup, antivirus holding it,
-            # or any unexpected bug in the probe/codec chain) must never
-            # take the rest of the batch down with it. Without this, one
-            # unlucky file aborts run_pipeline entirely -- every file
-            # after it in this scan is silently never processed, and the
-            # only thing the caller sees is a generic "stopped
+            # A single bad or racy file (a network-share hiccup, antivirus
+            # holding it, or any unexpected bug in the probe/codec chain)
+            # must never take the rest of the batch down with it. Without
+            # this, one unlucky file aborts run_pipeline entirely -- every
+            # file after it in this scan is silently never processed, and
+            # the only thing the caller sees is a generic "stopped
             # unexpectedly" failure with no per-file record of what
             # happened. Record it exactly like any other per-file error
             # and move on, the same way the probing phase above already

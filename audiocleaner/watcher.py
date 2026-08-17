@@ -107,6 +107,18 @@ def watch_iteration(
                 persistent_backup=persistent_backup,
                 preferred_languages=preferred_languages,
             )
+        except FileNotFoundError as e:
+            # File/folder vanished between the settle check above and
+            # process_file() actually running -- e.g. Radarr/Sonarr
+            # renaming or moving it right at that moment. Not marked
+            # processed below, so watch mode will naturally reconsider it
+            # (at its old or new path) on a later poll.
+            result = ProcessResult(
+                path=str(path), status="error",
+                message="This file (or its folder) is no longer at this location -- "
+                        "most likely renamed or moved by other software while this "
+                        f"was being picked up. Will retry automatically. ({e})",
+            )
         except Exception as e:
             # A single bad/racy file must never kill the whole watch
             # session. Without this, an uncaught exception here propagates
