@@ -20,7 +20,7 @@ from .codec_rank import (
     select_audio_tracks_to_keep, select_subtitle_tracks_to_keep,
     explain_audio_selection, explain_subtitle_selection,
 )
-from .config import TEMP_FILE_SUFFIX, BACKUP_FILE_SUFFIX
+from .config import TEMP_FILE_SUFFIX, BACKUP_FILE_SUFFIX, DEFAULT_REMUX_STALL_TIMEOUT_SECONDS, DEFAULT_REMUX_ABSOLUTE_TIMEOUT_SECONDS
 
 # Tolerance for container-level duration drift between input and output
 # (remuxing can shift the reported duration by a tiny amount even with no
@@ -64,8 +64,13 @@ _REMUX_CREATE_FLAGS = _NO_WINDOW | _BACKGROUND_MODE
 #   - an ABSOLUTE timeout: a generous backstop in case something produces
 #     nonstop-but-meaningless progress output forever, or no progress
 #     output at all for the whole run
-_REMUX_STALL_TIMEOUT_SECONDS = 20 * 60      # 20 min with zero progress movement
-_REMUX_ABSOLUTE_TIMEOUT_SECONDS = 6 * 3600  # 6h backstop regardless of progress
+#
+# The defaults live in config.py (DEFAULT_REMUX_STALL_TIMEOUT_SECONDS /
+# DEFAULT_REMUX_ABSOLUTE_TIMEOUT_SECONDS) since the stall timeout is a
+# GUI-configurable setting -- what counts as "genuinely stuck" depends on
+# the person's storage.
+_REMUX_STALL_TIMEOUT_SECONDS = DEFAULT_REMUX_STALL_TIMEOUT_SECONDS
+_REMUX_ABSOLUTE_TIMEOUT_SECONDS = DEFAULT_REMUX_ABSOLUTE_TIMEOUT_SECONDS
 
 # mkvmerge's --gui-mode prints machine-readable status lines of the form
 # "#GUI#progress 42%" as it works, instead of staying silent until it
@@ -243,6 +248,7 @@ def process_file(
     preferred_languages=None,
     on_remux_progress: Optional[Callable[[float], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
+    stall_timeout_seconds: int = _REMUX_STALL_TIMEOUT_SECONDS,
 ) -> ProcessResult:
     result = probe_file(path, cache=cache)
     if result.error:
@@ -374,6 +380,12 @@ def process_file(
     # starts. See _run_remux() for why this isn't a plain subprocess.run().
     returncode, output_text, cancelled, timed_out = _run_remux(
         cmd, on_progress=on_remux_progress, should_cancel=should_cancel,
+        # The absolute backstop always stays comfortably above whatever
+        # the (GUI-configurable) stall timeout is set to, so a person
+        # raising the stall timeout for a slow drive can't accidentally
+        # make the absolute ceiling fire first instead.
+        stall_timeout_seconds=stall_timeout_seconds,
+        timeout_seconds=max(_REMUX_ABSOLUTE_TIMEOUT_SECONDS, stall_timeout_seconds * 6),
     )
 
     if cancelled:
@@ -384,11 +396,10 @@ def process_file(
         _cleanup_temp(temp_path)
         return ProcessResult(path=str(path), status="error",
                               message=f"mkvmerge made no progress for over "
-                                      f"{_REMUX_STALL_TIMEOUT_SECONDS // 60} minutes (or ran past "
-                                      f"the {_REMUX_ABSOLUTE_TIMEOUT_SECONDS // 3600}h absolute limit) "
-                                      f"-- the drive or antivirus may be holding the file, or it may "
-                                      f"be genuinely stuck. A large file that's still making steady "
-                                      f"progress is not affected by this. Original untouched.",
+                                      f"{stall_timeout_seconds // 60} minutes -- the drive or "
+                                      f"antivirus may be holding the file, or it may be genuinely "
+                                      f"stuck. A large file that's still making steady progress is "
+                                      f"not affected by this. Original untouched.",
                               audio_decisions=audio_decisions, subtitle_decisions=subtitle_decisions, before=before)
 
     if returncode not in (0, 1) or not temp_path.exists():

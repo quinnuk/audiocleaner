@@ -27,6 +27,23 @@ DEFAULT_MAX_SAFETY_MODE = False
 # building up across a whole library.
 DEFAULT_PERSISTENT_BACKUP = False
 
+# --- Remux stall detection ---
+# How long mkvmerge's own reported progress can go without advancing at
+# all before a remux is treated as genuinely stuck (drive/network share
+# spun down or asleep, antivirus holding the file, etc) rather than just
+# slow. A large 4K remux with lossless TrueHD/Atmos tracks can legitimately
+# take a long time on an external or network drive while still making
+# steady progress the whole way through -- this is what actually
+# distinguishes that from a real hang, regardless of file size. Exposed as
+# a GUI setting since the right value genuinely depends on the person's
+# storage (a fast local NVMe library needs far less patience than a
+# library living on a spun-down USB drive or a slow NAS share).
+DEFAULT_REMUX_STALL_TIMEOUT_SECONDS = 20 * 60
+# Backstop ceiling regardless of progress, in case something produces
+# nonstop-but-meaningless progress forever. Always kept comfortably above
+# whatever the stall timeout is set to (see processor.process_file).
+DEFAULT_REMUX_ABSOLUTE_TIMEOUT_SECONDS = 6 * 3600
+
 # Ordered best -> worst. Keys are internal codec identifiers produced by
 # codec_rank.classify_audio_track(). Lower index = higher priority.
 CODEC_PRIORITY = [

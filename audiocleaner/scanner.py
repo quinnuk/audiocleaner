@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .config import CACHE_FILENAME, MKV_EXTENSIONS, is_own_generated_file
+from .config import (
+    CACHE_FILENAME, MKV_EXTENSIONS, is_own_generated_file,
+    DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
+)
 from .probe import ProbeCache, probe_file
 from .processor import process_file, ProcessResult, ProcessingCancelled
 from .history import ProcessingHistory
@@ -43,10 +46,47 @@ def find_mkv_files(root: Path) -> list[Path]:
     )
 
 
+def check_drive_responsiveness(root: Path, warn_threshold_seconds: float = 5.0) -> Optional[str]:
+    """
+    Quick, cheap check performed once before a batch starts: times how
+    long a trivial directory listing on `root` takes. A spun-down
+    external/USB drive, or a network share that's gone to sleep, can take
+    several seconds -- sometimes much longer -- to respond to its very
+    first access after being idle. That delay used to be indistinguishable
+    from mkvmerge genuinely being stuck (see the stall-timeout fix in
+    processor.py); surfacing it here, before any file processing starts,
+    explains it up front instead of silently eating into the first file's
+    stall-timeout budget.
+
+    Returns a human-readable heads-up message if `root` was slow to
+    respond, or None if it responded promptly. Never raises -- if root is
+    inaccessible, the real scan below will report that properly.
+    """
+    start = time.time()
+    try:
+        # next(iterdir(), None) -- not just stat() -- is what actually
+        # forces a spun-down drive to wake and start responding to reads;
+        # stat() on the root itself can be served from a cached directory
+        # entry higher up without touching the physical/network volume.
+        # Only the first entry is pulled, so this stays cheap even on a
+        # huge folder once the drive is actually awake.
+        next(root.iterdir(), None)
+    except OSError:
+        return None  # let the real scan surface this properly
+    elapsed = time.time() - start
+    if elapsed >= warn_threshold_seconds:
+        return (f"{root} took {elapsed:.1f}s to respond to its first read -- looks like a "
+                f"spun-down drive or a sleeping network share. This is normal after it's "
+                f"been idle; the first file or two may be slower than usual while it "
+                f"wakes up properly.")
+    return None
+
+
 def run_pipeline(
     root: Path,
     on_progress: Optional[Callable[..., None]] = None,
     on_file_done: Optional[Callable[[ProcessResult], None]] = None,
+    on_notice: Optional[Callable[[str], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     probe_workers: int = 4,
     keep_commentary: bool = False,
@@ -57,6 +97,8 @@ def run_pipeline(
     persistent_backup: bool = False,
     history: Optional[ProcessingHistory] = None,
     preferred_languages: Optional[set] = None,
+    only_paths: Optional[list] = None,
+    stall_timeout_seconds: int = DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
 ) -> ScanSummary:
     """
     on_progress(files_done, files_total, current_filename, phase, file_pct)
@@ -66,15 +108,34 @@ def run_pipeline(
     output) -- this is what lets a single large file show real progress
     instead of appearing frozen for however long its remux takes.
     on_file_done(ProcessResult) is called once per file after processing.
+    on_notice(message) is called for informational, non-per-file heads-up
+    messages -- currently just a slow-to-respond drive detected before the
+    batch starts (see check_drive_responsiveness above).
     should_cancel() lets the caller request an early stop -- checked
     between files, AND polled every ~0.5s during an in-progress remux, so
     cancelling actually interrupts a slow/stuck file instead of waiting
     for it to finish or time out.
+    only_paths, if given, restricts processing to exactly these files
+    (still under `root`) instead of the usual full recursive scan -- used
+    to retry just the files that errored on a previous run without
+    re-touching everything else.
     """
     start = time.time()
     summary = ScanSummary()
 
-    files = find_mkv_files(root)
+    if on_notice:
+        drive_notice = check_drive_responsiveness(root)
+        if drive_notice:
+            on_notice(drive_notice)
+
+    if only_paths is not None:
+        files = sorted(
+            p for p in only_paths
+            if p.is_file() and p.suffix.lower() in MKV_EXTENSIONS
+            and not is_own_generated_file(p)
+        )
+    else:
+        files = find_mkv_files(root)
     total = len(files)
     if total == 0:
         summary.elapsed_seconds = time.time() - start
@@ -127,6 +188,7 @@ def run_pipeline(
                 preferred_languages=preferred_languages,
                 on_remux_progress=_on_remux_progress if on_progress else None,
                 should_cancel=should_cancel,
+                stall_timeout_seconds=stall_timeout_seconds,
             )
         except ProcessingCancelled:
             break  # the in-progress file's temp output was already cleaned up

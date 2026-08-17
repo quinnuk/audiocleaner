@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .config import MKV_EXTENSIONS, is_own_generated_file
+from .config import MKV_EXTENSIONS, is_own_generated_file, DEFAULT_REMUX_STALL_TIMEOUT_SECONDS
 from .probe import ProbeCache
 from .processor import process_file, ProcessResult
 from .history import ProcessingHistory
@@ -75,6 +75,7 @@ def watch_iteration(
     persistent_backup: bool = False,
     history: Optional[ProcessingHistory] = None,
     preferred_languages: Optional[set] = None,
+    stall_timeout_seconds: int = DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
 ) -> list[ProcessResult]:
     """
     One polling pass over the folder tree. Returns a ProcessResult for
@@ -106,6 +107,7 @@ def watch_iteration(
                 max_safety_mode=max_safety_mode,
                 persistent_backup=persistent_backup,
                 preferred_languages=preferred_languages,
+                stall_timeout_seconds=stall_timeout_seconds,
             )
         except FileNotFoundError as e:
             # File/folder vanished between the settle check above and

@@ -105,7 +105,7 @@ def test_verification_failure_leaves_original_untouched_and_deletes_temp(tmp_pat
     monkeypatch.setattr(processor_mod, "probe_file", fake_probe)
     monkeypatch.setattr(processor_mod, "find_tool", lambda name: "/usr/bin/mkvmerge")
 
-    def fake_run_remux(cmd, on_progress=None, should_cancel=None, timeout_seconds=None):
+    def fake_run_remux(cmd, on_progress=None, should_cancel=None, timeout_seconds=None, stall_timeout_seconds=None):
         # Simulate mkvmerge producing *some* output file so the temp-file
         # existence check passes, but verification (via fake_probe) must
         # still catch that its contents are wrong.
@@ -161,7 +161,7 @@ def test_max_safety_mode_restores_original_on_final_verification_failure(tmp_pat
     monkeypatch.setattr(processor_mod, "probe_file", fake_probe)
     monkeypatch.setattr(processor_mod, "find_tool", lambda name: "/usr/bin/mkvmerge")
 
-    def fake_run_remux(cmd, on_progress=None, should_cancel=None, timeout_seconds=None):
+    def fake_run_remux(cmd, on_progress=None, should_cancel=None, timeout_seconds=None, stall_timeout_seconds=None):
         out_path = Path(cmd[cmd.index("-o") + 1])
         out_path.write_bytes(b"CLEANED" * 50)
         return (0, "", False, False)

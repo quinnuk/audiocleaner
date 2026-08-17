@@ -13,7 +13,10 @@ from .processor import ProcessResult
 from .probe import ProbeCache
 from .watcher import WatchState, watch_iteration
 from .history import ProcessingHistory
-from .config import CACHE_FILENAME, WATCH_POLL_INTERVAL_SECONDS, WATCH_DEFAULT_SETTLE_SECONDS
+from .config import (
+    CACHE_FILENAME, WATCH_POLL_INTERVAL_SECONDS, WATCH_DEFAULT_SETTLE_SECONDS,
+    DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
+)
 
 
 class CleanerWorker(QThread):
@@ -23,6 +26,7 @@ class CleanerWorker(QThread):
     file_done = Signal(object)              # ProcessResult
     finished_ok = Signal(object)            # ScanSummary
     failed = Signal(str)                    # fatal error message
+    notice = Signal(str)                    # informational, non-per-file heads-up
 
     def __init__(
         self,
@@ -35,6 +39,8 @@ class CleanerWorker(QThread):
         max_safety_mode: bool = False,
         persistent_backup: bool = False,
         preferred_languages: Optional[set] = None,
+        only_paths: Optional[list] = None,
+        stall_timeout_seconds: int = DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
     ):
         super().__init__(parent)
         self.root = root
@@ -45,6 +51,8 @@ class CleanerWorker(QThread):
         self.max_safety_mode = max_safety_mode
         self.persistent_backup = persistent_backup
         self.preferred_languages = preferred_languages
+        self.only_paths = only_paths
+        self.stall_timeout_seconds = stall_timeout_seconds
         self._cancel_requested = False
 
     def cancel(self):
@@ -65,10 +73,14 @@ class CleanerWorker(QThread):
                 logger.log_result(result)
                 self.file_done.emit(result)
 
+            def on_notice(message: str):
+                self.notice.emit(message)
+
             summary: ScanSummary = run_pipeline(
                 self.root,
                 on_progress=on_progress,
                 on_file_done=on_file_done,
+                on_notice=on_notice,
                 should_cancel=self._should_cancel,
                 keep_commentary=self.keep_commentary,
                 subtitle_filter_enabled=self.subtitle_filter_enabled,
@@ -77,6 +89,8 @@ class CleanerWorker(QThread):
                 max_safety_mode=self.max_safety_mode,
                 persistent_backup=self.persistent_backup,
                 preferred_languages=self.preferred_languages,
+                only_paths=self.only_paths,
+                stall_timeout_seconds=self.stall_timeout_seconds,
             )
             logger.log_summary(summary)
             self.finished_ok.emit(summary)
@@ -137,6 +151,7 @@ class WatchWorker(QThread):
         max_safety_mode: bool = False,
         persistent_backup: bool = False,
         preferred_languages: Optional[set] = None,
+        stall_timeout_seconds: int = DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
     ):
         super().__init__(parent)
         self.root = root
@@ -147,6 +162,7 @@ class WatchWorker(QThread):
         self.max_safety_mode = max_safety_mode
         self.persistent_backup = persistent_backup
         self.preferred_languages = preferred_languages
+        self.stall_timeout_seconds = stall_timeout_seconds
         self._stop_requested = False
 
     def stop(self):
@@ -177,6 +193,7 @@ class WatchWorker(QThread):
                     persistent_backup=self.persistent_backup,
                     history=history,
                     preferred_languages=self.preferred_languages,
+                    stall_timeout_seconds=self.stall_timeout_seconds,
                 )
                 if results:
                     cache.save()

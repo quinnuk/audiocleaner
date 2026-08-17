@@ -36,6 +36,7 @@ from .config import (
     APP_NAME, LOG_FILENAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
     DEFAULT_KEEP_COMMENTARY, DEFAULT_SUBTITLE_FILTER_ENABLED, DEFAULT_SUBTITLE_LANGUAGES,
     DEFAULT_MAX_SAFETY_MODE, DEFAULT_PERSISTENT_BACKUP, CACHE_FILENAME,
+    DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
 )
 from .worker import CleanerWorker, WatchWorker, LanguageScanWorker
 from .probe import check_tools_available, get_missing_tools
@@ -410,6 +411,15 @@ class MainWindow(QWidget):
         self._run_folder_index = 0
         self._run_folder_count = 0
         self._run_was_preview = False
+        # Retry Errors support: which root each currently-processing file
+        # belongs to (set each time a folder is popped from the queue),
+        # the list of (root, file_path) pairs that errored on the most
+        # recently completed manual run, and a per-root file-list override
+        # used to constrain a retry run to just those files instead of a
+        # full rescan.
+        self._current_run_root: Path | None = None
+        self._last_error_paths: list[tuple[Path, Path]] = []
+        self._run_only_paths: dict[Path, list[Path]] = {}
 
         self._deps_ok = False
         self._build_ui()
@@ -468,8 +478,16 @@ class MainWindow(QWidget):
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.cancel_btn.setEnabled(False)
+        self.retry_errors_btn = QPushButton("Retry Errors")
+        self.retry_errors_btn.setToolTip(
+            "Re-run only the file(s) that failed with an error on the last run, "
+            "instead of rescanning everything again."
+        )
+        self.retry_errors_btn.clicked.connect(self._on_retry_errors)
+        self.retry_errors_btn.setEnabled(False)
         action_row.addWidget(self.start_btn)
         action_row.addWidget(self.cancel_btn)
+        action_row.addWidget(self.retry_errors_btn)
         layout.addLayout(action_row)
 
         preview_row = QHBoxLayout()
@@ -530,6 +548,25 @@ class MainWindow(QWidget):
         self.persistent_backup_check.setEnabled(DEFAULT_MAX_SAFETY_MODE)
         self.persistent_backup_check.toggled.connect(self._save_safety_options)
         safety_layout.addWidget(self.persistent_backup_check)
+
+        stall_row = QHBoxLayout()
+        stall_row.addWidget(QLabel("Give up on a file only if it makes zero progress for:"))
+        self.stall_timeout_spin = QSpinBox()
+        self.stall_timeout_spin.setRange(5, 240)
+        self.stall_timeout_spin.setSingleStep(5)
+        self.stall_timeout_spin.setValue(DEFAULT_REMUX_STALL_TIMEOUT_SECONDS // 60)
+        self.stall_timeout_spin.setSuffix(" min")
+        self.stall_timeout_spin.setToolTip(
+            "A file that's still making real progress is never affected by this, no "
+            "matter how large or slow -- it only fires once mkvmerge's own reported "
+            "progress hasn't moved at all for this long. Raise it if your library "
+            "lives on a slow, external, or network drive that can legitimately take "
+            "a while to wake up or keep up with a large 4K remux."
+        )
+        self.stall_timeout_spin.valueChanged.connect(self._save_safety_options)
+        stall_row.addWidget(self.stall_timeout_spin)
+        stall_row.addStretch()
+        safety_layout.addLayout(stall_row)
 
         rebuild_row = QHBoxLayout()
         self.rebuild_cache_btn = QPushButton("Rebuild Cache…")
@@ -718,6 +755,13 @@ class MainWindow(QWidget):
         self.persistent_backup_check.blockSignals(False)
         self.persistent_backup_check.setEnabled(max_safety)
 
+        stall_minutes = self.settings.value(
+            "stall_timeout_minutes", DEFAULT_REMUX_STALL_TIMEOUT_SECONDS // 60, type=int
+        )
+        self.stall_timeout_spin.blockSignals(True)
+        self.stall_timeout_spin.setValue(stall_minutes)
+        self.stall_timeout_spin.blockSignals(False)
+
         self._update_subtitle_controls_enabled()
         self._update_action_buttons_enabled()
 
@@ -740,6 +784,7 @@ class MainWindow(QWidget):
         self.persistent_backup_check.setEnabled(self.max_safety_check.isChecked())
         self.settings.setValue("max_safety_mode", self.max_safety_check.isChecked())
         self.settings.setValue("persistent_backup", self.persistent_backup_check.isChecked())
+        self.settings.setValue("stall_timeout_minutes", self.stall_timeout_spin.value())
 
     def _on_rebuild_cache(self):
         if not self.selected_roots:
@@ -992,9 +1037,12 @@ class MainWindow(QWidget):
 
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
+        self.retry_errors_btn.setEnabled(False)
         self.watch_btn.setEnabled(False)
 
         self._run_queue = list(self.selected_roots)
+        self._run_only_paths = {}
+        self._last_error_paths = []
         self._run_folder_count = len(self._run_queue)
         self._run_folder_index = 0
         self._run_was_preview = self.preview_check.isChecked()
@@ -1006,15 +1054,56 @@ class MainWindow(QWidget):
 
         self._run_next_folder_in_queue()
 
+    def _on_retry_errors(self):
+        if not self._last_error_paths:
+            return
+
+        tool_error = check_tools_available()
+        if tool_error:
+            QMessageBox.critical(self, APP_NAME, tool_error)
+            return
+
+        by_root: dict[Path, list[Path]] = {}
+        for root, path in self._last_error_paths:
+            by_root.setdefault(root, []).append(path)
+        total_files = sum(len(v) for v in by_root.values())
+
+        self.status_box.clear()
+        self.summary_label.setText("")
+        self.progress_bar.setValue(0)
+        self.files_count_label.setText("0 of 0")
+        self.eta_label.setText("—")
+        self.current_file_label.setText("—")
+        self._start_time = time.time()
+
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.retry_errors_btn.setEnabled(False)
+        self.watch_btn.setEnabled(False)
+
+        self._run_queue = list(by_root.keys())
+        self._run_only_paths = by_root
+        self._last_error_paths = []  # this run will repopulate it with whatever still fails
+        self._run_folder_count = len(self._run_queue)
+        self._run_folder_index = 0
+        self._run_was_preview = self.preview_check.isChecked()
+        for key in self._run_totals:
+            self._run_totals[key] = 0 if key != "elapsed_seconds" else 0.0
+
+        self._log(f"=== Retrying {total_files} file(s) that previously errored ===")
+        self._run_next_folder_in_queue()
+
     def _run_next_folder_in_queue(self):
         if not self._run_queue:
             self._show_combined_summary()
             self.start_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
+            self.retry_errors_btn.setEnabled(len(self._last_error_paths) > 0)
             self.watch_btn.setEnabled(True)
             return
 
         root = self._run_queue.pop(0)
+        self._current_run_root = root
         self._run_folder_index += 1
         self.current_folder_label.setText(
             f"{root} ({self._run_folder_index} of {self._run_folder_count})"
@@ -1029,9 +1118,12 @@ class MainWindow(QWidget):
             preview_only=self.preview_check.isChecked(),
             max_safety_mode=self.max_safety_check.isChecked(),
             persistent_backup=self.persistent_backup_check.isChecked(),
+            only_paths=self._run_only_paths.get(root),
+            stall_timeout_seconds=self.stall_timeout_spin.value() * 60,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.file_done.connect(self._on_file_done)
+        self.worker.notice.connect(self._on_notice)
         self.worker.finished_ok.connect(self._on_folder_finished)
         self.worker.failed.connect(self._on_failed)
         self.worker.start()
@@ -1118,6 +1210,7 @@ class MainWindow(QWidget):
                 subtitle_languages=self._get_selected_subtitle_languages(),
                 max_safety_mode=self.max_safety_check.isChecked(),
                 persistent_backup=self.persistent_backup_check.isChecked(),
+                stall_timeout_seconds=self.stall_timeout_spin.value() * 60,
             )
             w.file_done.connect(self._on_watch_file_done)
             w.heartbeat.connect(self._on_watch_heartbeat)
@@ -1217,11 +1310,17 @@ class MainWindow(QWidget):
             self.eta_label.setText(_format_seconds(remaining))
 
     def _on_file_done(self, result):
+        if result.status == "error" and self._current_run_root is not None:
+            self._last_error_paths.append((self._current_run_root, Path(result.path)))
         self._log(_format_result_line(result), status=result.status)
+
+    def _on_notice(self, message: str):
+        self._log(f"ℹ {message}")
 
     def _on_failed(self, message: str):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        self.retry_errors_btn.setEnabled(len(self._last_error_paths) > 0)
         self.watch_btn.setEnabled(True)
         self._run_queue.clear()
         QMessageBox.critical(self, APP_NAME, f"AudioCleaner stopped unexpectedly:\n{message}")
