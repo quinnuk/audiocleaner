@@ -327,7 +327,16 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
     if mediainfo_path is not None:
         try:
             mi_data = _run_json([mediainfo_path, "--Output=JSON", str(path)])
-            for track in mi_data.get("media", {}).get("track", []):
+            # `.get(key, {})` only supplies the default when the key is
+            # *missing* -- if mediainfo emits the key with an explicit
+            # `null` (plausible on a truncated/still-copying file, where
+            # it can tell a section exists but can't fully read it yet),
+            # `.get()` returns None right through the default, and the
+            # very next `.get()` call on that blows up with "'NoneType'
+            # object has no attribute 'get'". `or {}` catches both cases.
+            for track in (mi_data.get("media") or {}).get("track") or []:
+                if not track:
+                    continue
                 if track.get("@type") != "Audio":
                     continue
                 mi_audio_by_position[len(mi_audio_by_position)] = track
@@ -367,10 +376,12 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
         return "other"
 
     audio_index = 0
-    for track in mkv_data.get("tracks", []):
+    for track in mkv_data.get("tracks") or []:
+        if not track:
+            continue
         if track.get("type") != "audio":
             continue
-        props = track.get("properties", {})
+        props = track.get("properties") or {}
         codec_id = props.get("codec_id", "")
         codec_name = track.get("codec", "")
         track_number = props.get("number")
@@ -424,10 +435,12 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
         )
         audio_index += 1
 
-    for track in mkv_data.get("tracks", []):
+    for track in mkv_data.get("tracks") or []:
+        if not track:
+            continue
         if track.get("type") != "subtitles":
             continue
-        props = track.get("properties", {})
+        props = track.get("properties") or {}
         result.subtitle_tracks.append(
             SubtitleTrackInfo(
                 track_id=track.get("id"),
@@ -446,10 +459,12 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
         except (ValueError, AttributeError):
             return 0, 0
 
-    for track in mkv_data.get("tracks", []):
+    for track in mkv_data.get("tracks") or []:
+        if not track:
+            continue
         if track.get("type") != "video":
             continue
-        props = track.get("properties", {})
+        props = track.get("properties") or {}
         width, height = _parse_dim(props.get("pixel_dimensions") or props.get("display_dimensions") or "")
         result.video_tracks.append(
             VideoTrackInfo(
@@ -464,12 +479,12 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
             )
         )
 
-    result.attachment_count = len(mkv_data.get("attachments", []))
+    result.attachment_count = len(mkv_data.get("attachments") or [])
     result.chapter_count = sum(
-        len(edition.get("chapter_atoms", []))
-        for edition in mkv_data.get("chapters", [])
+        len((edition or {}).get("chapter_atoms") or [])
+        for edition in (mkv_data.get("chapters") or [])
     )
-    container = mkv_data.get("container", {}).get("properties", {})
+    container = (mkv_data.get("container") or {}).get("properties") or {}
     duration_ns = container.get("duration")
     if duration_ns:
         result.duration_seconds = duration_ns / 1_000_000_000
@@ -480,4 +495,4 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
 
 
 def audio_index_total(mkv_data: dict) -> int:
-    return sum(1 for t in mkv_data.get("tracks", []) if t.get("type") == "audio")
+    return sum(1 for t in (mkv_data.get("tracks") or []) if t and t.get("type") == "audio")
