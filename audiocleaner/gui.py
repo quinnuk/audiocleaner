@@ -18,7 +18,9 @@ import platform
 import subprocess
 import sys
 import time
+import traceback
 import webbrowser
+import functools
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings
@@ -87,11 +89,21 @@ _STATUS_COLORS = {
 # every widget just inherited whatever bare default the OS/Qt style
 # happened to supply, and the icon's colours appeared nowhere else in the
 # app. This ties the window to the icon instead of looking unrelated to it.
-_ACCENT = "#4b2e83"          # primary accent -- the icon's mid-gradient purple
-_ACCENT_HOVER = "#5f3ea3"
-_ACCENT_PRESSED = "#3a2266"
-_ACCENT_DISABLED = "#bdb3d6"
-_ACCENT_SOFT = "#efe9fa"     # very light tint of the accent, for hover states
+_ACCENT = "#5b2fa8"          # primary accent -- punchier version of the icon's mid-gradient purple
+_ACCENT_HOVER = "#7040c4"
+_ACCENT_PRESSED = "#41217a"
+_ACCENT_DISABLED = "#c3b3e6"
+_ACCENT_SOFT = "#efe6fb"     # very light tint of the accent, for hover states
+
+# Second accent for Start Watching, deliberately distinct from _ACCENT
+# (Start) -- pulled from the icon's cyan waveform. Start and Start
+# Watching are both primary actions but different in kind (a one-off run
+# vs an indefinite background mode); giving them the same colour made
+# them too easy to mix up at a glance.
+_WATCH_ACCENT = "#0f8fa8"
+_WATCH_ACCENT_HOVER = "#12a8c4"
+_WATCH_ACCENT_PRESSED = "#0b6b7d"
+_WATCH_ACCENT_DISABLED = "#a9d3da"
 
 _APP_STYLESHEET = f"""
 QWidget {{
@@ -121,16 +133,14 @@ QPushButton:hover {{
     background-color: {_ACCENT_SOFT};
 }}
 QPushButton:pressed {{
-    background-color: #ded4f2;
+    background-color: #ddc9f5;
 }}
 QPushButton:disabled {{
     color: #a49bb8;
     background-color: #f0eef5;
     border-color: #ded9ea;
 }}
-/* Primary call-to-action buttons (Start, Start Watching) -- the two
-   actions that actually touch files, so they're the only ones that get
-   the full accent colour; everything else stays neutral. */
+/* Primary call-to-action button: Start -- the one-off "run now" action. */
 QPushButton#primaryButton {{
     background-color: {_ACCENT};
     color: #ffffff;
@@ -148,6 +158,26 @@ QPushButton#primaryButton:disabled {{
     background-color: {_ACCENT_DISABLED};
     color: #f2effa;
     border-color: {_ACCENT_DISABLED};
+}}
+/* Start Watching -- deliberately a different colour from Start (see
+   _WATCH_ACCENT above for why). */
+QPushButton#watchButton {{
+    background-color: {_WATCH_ACCENT};
+    color: #ffffff;
+    border: 1px solid {_WATCH_ACCENT_PRESSED};
+    font-weight: 600;
+    padding: 6px 16px;
+}}
+QPushButton#watchButton:hover {{
+    background-color: {_WATCH_ACCENT_HOVER};
+}}
+QPushButton#watchButton:pressed, QPushButton#watchButton:checked {{
+    background-color: {_WATCH_ACCENT_PRESSED};
+}}
+QPushButton#watchButton:disabled {{
+    background-color: {_WATCH_ACCENT_DISABLED};
+    color: #eefbfd;
+    border-color: {_WATCH_ACCENT_DISABLED};
 }}
 QPlainTextEdit, QTableWidget, QListWidget, QLineEdit, QComboBox, QSpinBox {{
     background-color: #ffffff;
@@ -184,10 +214,6 @@ QCheckBox::indicator:checked {{
 QScrollArea {{
     border: none;
 }}
-QTabBar::tab:selected {{
-    color: {_ACCENT};
-    font-weight: 600;
-}}
 """
 
 
@@ -198,6 +224,71 @@ def _apply_theme(app: QApplication) -> None:
     consistent look tied to its own icon instead of an unstyled default."""
     app.setStyle("Fusion")
     app.setStyleSheet(_APP_STYLESHEET)
+
+
+def _install_global_excepthook():
+    """
+    PySide6 slots are frequently invoked from C++ (any signal delivered
+    across threads -- which is every CleanerWorker/WatchWorker/
+    LanguageScanWorker signal, since each runs on its own QThread -- is
+    queued and dispatched this way even though the slot itself is plain
+    Python). If a Python exception escapes one of those slots uncaught, it
+    can't be propagated back through the C++ call stack; PySide6's default
+    behaviour in that situation is to abort the whole process outright --
+    no traceback window, no crash dialog, especially not in a windowed
+    (console=False) PyInstaller build where there's no console to print to
+    in the first place. From the user's side this looks exactly like the
+    app just closing itself for no reason, often right as the first batch
+    of progress/status signals start arriving after clicking Start.
+
+    Installing a top-level excepthook is defence in depth: every
+    individual worker-signal handler below is also wrapped with
+    @_safe_slot so exceptions are caught before they ever reach this
+    point, but this still catches anything outside those (or in
+    @_safe_slot itself) instead of silently killing the app.
+    """
+    def _hook(exc_type, exc_value, exc_tb):
+        message = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        sys.stderr.write(message)
+        try:
+            app = QApplication.instance()
+            QMessageBox.critical(
+                app.activeWindow() if app else None,
+                APP_NAME,
+                "AudioCleaner hit an unexpected internal error and had to stop "
+                f"what it was doing, but is still running:\n\n{exc_value}",
+            )
+        except Exception:
+            pass  # the error dialog itself must never be what brings the app down
+    sys.excepthook = _hook
+
+
+def _safe_slot(func):
+    """
+    Wraps a Qt slot method so an exception inside it is caught, logged,
+    and shown to the user via a message box instead of propagating back
+    into PySide6/Qt's C++ layer -- see _install_global_excepthook() above
+    for why that matters. Applied to every method connected to a
+    CleanerWorker/WatchWorker/LanguageScanWorker signal, since those are
+    exactly the cross-thread-delivered slots where this failure mode
+    happens.
+    """
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                QMessageBox.critical(
+                    self, APP_NAME,
+                    f"AudioCleaner hit an unexpected internal error in "
+                    f"{func.__name__} and had to stop what it was doing, but "
+                    f"is still running:\n\n{e}",
+                )
+            except Exception:
+                pass
+    return wrapper
 
 
 def _icon_path() -> str | None:
@@ -379,7 +470,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(680, 600)
+        self.resize(700, 640)
 
         icon_path = _icon_path()
         if icon_path:
@@ -456,7 +547,7 @@ class MainWindow(QWidget):
         # Folder list
         layout.addWidget(QLabel("Folders to clean / watch (any number, don't need to be related):"))
         self.folder_list = QListWidget()
-        self.folder_list.setMaximumHeight(120)
+        self.folder_list.setMaximumHeight(90)
         layout.addWidget(self.folder_list)
 
         folder_btn_row = QHBoxLayout()
@@ -499,10 +590,13 @@ class MainWindow(QWidget):
         preview_row.addStretch()
         layout.addLayout(preview_row)
 
-        # Watch mode row
+        # Watch mode row -- deliberately a different colour (teal/cyan) from
+        # Start (purple): they're both primary actions, but different ones
+        # (a one-off run vs an indefinite background mode), and sharing one
+        # colour made them easy to mix up at a glance.
         watch_row = QHBoxLayout()
         self.watch_btn = QPushButton("Start Watching All Folders")
-        self.watch_btn.setObjectName("primaryButton")
+        self.watch_btn.setObjectName("watchButton")
         self.watch_btn.setCheckable(True)
         self.watch_btn.clicked.connect(self._on_toggle_watch)
         self.watch_btn.setEnabled(False)
@@ -529,108 +623,14 @@ class MainWindow(QWidget):
         startup_row.addStretch()
         layout.addLayout(startup_row)
 
-        # Safety options
-        safety_box = QGroupBox("Safety Options")
-        safety_layout = QVBoxLayout()
-
-        self.max_safety_check = QCheckBox(
-            "Maximum Safety Mode — keep a full backup until the replaced file is "
-            "re-verified; auto-restore the original if that check fails"
-        )
-        self.max_safety_check.setChecked(DEFAULT_MAX_SAFETY_MODE)
-        self.max_safety_check.toggled.connect(self._save_safety_options)
-        safety_layout.addWidget(self.max_safety_check)
-
-        self.persistent_backup_check = QCheckBox(
-            "Keep the backup after a successful clean too (uses extra disk space)"
-        )
-        self.persistent_backup_check.setChecked(DEFAULT_PERSISTENT_BACKUP)
-        self.persistent_backup_check.setEnabled(DEFAULT_MAX_SAFETY_MODE)
-        self.persistent_backup_check.toggled.connect(self._save_safety_options)
-        safety_layout.addWidget(self.persistent_backup_check)
-
-        stall_row = QHBoxLayout()
-        stall_row.addWidget(QLabel("Give up on a file only if it makes zero progress for:"))
-        self.stall_timeout_spin = QSpinBox()
-        self.stall_timeout_spin.setRange(5, 240)
-        self.stall_timeout_spin.setSingleStep(5)
-        self.stall_timeout_spin.setValue(DEFAULT_REMUX_STALL_TIMEOUT_SECONDS // 60)
-        self.stall_timeout_spin.setSuffix(" min")
-        self.stall_timeout_spin.setToolTip(
-            "A file that's still making real progress is never affected by this, no "
-            "matter how large or slow -- it only fires once mkvmerge's own reported "
-            "progress hasn't moved at all for this long. Raise it if your library "
-            "lives on a slow, external, or network drive that can legitimately take "
-            "a while to wake up or keep up with a large 4K remux."
-        )
-        self.stall_timeout_spin.valueChanged.connect(self._save_safety_options)
-        stall_row.addWidget(self.stall_timeout_spin)
-        stall_row.addStretch()
-        safety_layout.addLayout(stall_row)
-
-        rebuild_row = QHBoxLayout()
-        self.rebuild_cache_btn = QPushButton("Rebuild Cache…")
-        self.rebuild_cache_btn.clicked.connect(self._on_rebuild_cache)
-        rebuild_row.addWidget(self.rebuild_cache_btn)
-        rebuild_row.addWidget(QLabel(
-            "Forces every selected folder to be re-analysed from scratch on the next run. "
-            "Does not modify any media file."
-        ))
-        rebuild_row.addStretch()
-        safety_layout.addLayout(rebuild_row)
-
-        history_row = QHBoxLayout()
-        self.history_btn = QPushButton("Processing History…")
-        self.history_btn.clicked.connect(self._on_show_history)
-        history_row.addWidget(self.history_btn)
-        history_row.addWidget(QLabel("What AudioCleaner has done, across every folder and run."))
-        history_row.addStretch()
-        safety_layout.addLayout(history_row)
-
-        safety_box.setLayout(safety_layout)
-        layout.addWidget(safety_box)
-
-        # Audio & subtitle options
-        options_box = QGroupBox("Audio && Subtitle Options")
-        options_layout = QVBoxLayout()
-
-        self.keep_commentary_check = QCheckBox(
-            "Keep commentary tracks (default: removed like any other extra audio track)"
-        )
-        self.keep_commentary_check.setChecked(DEFAULT_KEEP_COMMENTARY)
-        self.keep_commentary_check.toggled.connect(self._save_audio_subtitle_options)
-        options_layout.addWidget(self.keep_commentary_check)
-
-        self.subtitle_filter_check = QCheckBox(
-            "Also clean subtitle tracks (keep only checked languages below, plus any Forced tracks)"
-        )
-        self.subtitle_filter_check.setChecked(DEFAULT_SUBTITLE_FILTER_ENABLED)
-        self.subtitle_filter_check.toggled.connect(self._on_toggle_subtitle_filter)
-        options_layout.addWidget(self.subtitle_filter_check)
-
-        scan_row = QHBoxLayout()
-        self.scan_languages_btn = QPushButton("Scan Folders for Subtitle Languages…")
-        self.scan_languages_btn.clicked.connect(self._on_scan_languages)
-        scan_row.addWidget(self.scan_languages_btn)
-        scan_row.addStretch()
-        options_layout.addLayout(scan_row)
-
-        self.lang_scroll = QScrollArea()
-        self.lang_scroll.setWidgetResizable(True)
-        self.lang_scroll.setMaximumHeight(110)
-        self.lang_checklist_widget = QWidget()
-        self.lang_checklist_layout = QVBoxLayout(self.lang_checklist_widget)
-        self.lang_checklist_placeholder = QLabel(
-            "Scan folders above to see which subtitle languages are actually present."
-        )
-        self.lang_checklist_placeholder.setStyleSheet("color: #666;")
-        self.lang_checklist_layout.addWidget(self.lang_checklist_placeholder)
-        self.lang_checklist_layout.addStretch()
-        self.lang_scroll.setWidget(self.lang_checklist_widget)
-        options_layout.addWidget(self.lang_scroll)
-
-        options_box.setLayout(options_layout)
-        layout.addWidget(options_box)
+        # Safety Options and Audio & Subtitle Options side by side -- this
+        # is what keeps the window from being twice as tall as it needs to
+        # be while still putting everything on one page (no tabs to
+        # switch between to find a setting).
+        options_row = QHBoxLayout()
+        self._build_safety_options(options_row)
+        self._build_audio_subtitle_options(options_row)
+        layout.addLayout(options_row)
         self._update_subtitle_controls_enabled()
 
         # Progress group
@@ -670,6 +670,128 @@ class MainWindow(QWidget):
         bottom_row.addStretch()
         bottom_row.addWidget(self.open_log_btn)
         layout.addLayout(bottom_row)
+
+    def _build_safety_options(self, parent_row: QHBoxLayout):
+        safety_box = QGroupBox("Safety Options")
+        safety_layout = QVBoxLayout()
+
+        self.max_safety_check = QCheckBox("Maximum Safety Mode")
+        self.max_safety_check.setToolTip(
+            "Keeps a full backup until the replaced file is re-verified; "
+            "auto-restores the original if that check fails."
+        )
+        self.max_safety_check.setChecked(DEFAULT_MAX_SAFETY_MODE)
+        self.max_safety_check.toggled.connect(self._save_safety_options)
+        safety_layout.addWidget(self.max_safety_check)
+        max_safety_hint = QLabel(
+            "Keeps a full backup until the replaced file is re-verified; "
+            "auto-restores the original if that check fails."
+        )
+        max_safety_hint.setWordWrap(True)
+        max_safety_hint.setStyleSheet("color: #666;")
+        safety_layout.addWidget(max_safety_hint)
+
+        self.persistent_backup_check = QCheckBox("Keep the backup after a successful clean too")
+        self.persistent_backup_check.setToolTip("Uses extra disk space.")
+        self.persistent_backup_check.setChecked(DEFAULT_PERSISTENT_BACKUP)
+        self.persistent_backup_check.setEnabled(DEFAULT_MAX_SAFETY_MODE)
+        self.persistent_backup_check.toggled.connect(self._save_safety_options)
+        safety_layout.addWidget(self.persistent_backup_check)
+
+        stall_row = QHBoxLayout()
+        stall_label = QLabel("Give up on a file after zero progress for:")
+        stall_row.addWidget(stall_label)
+        self.stall_timeout_spin = QSpinBox()
+        self.stall_timeout_spin.setRange(5, 240)
+        self.stall_timeout_spin.setSingleStep(5)
+        self.stall_timeout_spin.setValue(DEFAULT_REMUX_STALL_TIMEOUT_SECONDS // 60)
+        self.stall_timeout_spin.setSuffix(" min")
+        self.stall_timeout_spin.setToolTip(
+            "A file that's still making real progress is never affected by this, no "
+            "matter how large or slow -- it only fires once mkvmerge's own reported "
+            "progress hasn't moved at all for this long. Raise it if your library "
+            "lives on a slow, external, or network drive that can legitimately take "
+            "a while to wake up or keep up with a large 4K remux."
+        )
+        self.stall_timeout_spin.valueChanged.connect(self._save_safety_options)
+        stall_row.addWidget(self.stall_timeout_spin)
+        stall_row.addStretch()
+        safety_layout.addLayout(stall_row)
+
+        self.rebuild_cache_btn = QPushButton("Rebuild Cache…")
+        self.rebuild_cache_btn.clicked.connect(self._on_rebuild_cache)
+        safety_layout.addWidget(self.rebuild_cache_btn)
+        rebuild_hint = QLabel(
+            "Forces every selected folder to be re-analysed from scratch on the next run. "
+            "Does not modify any media file."
+        )
+        rebuild_hint.setWordWrap(True)
+        rebuild_hint.setStyleSheet("color: #666;")
+        safety_layout.addWidget(rebuild_hint)
+
+        self.history_btn = QPushButton("Processing History…")
+        self.history_btn.clicked.connect(self._on_show_history)
+        safety_layout.addWidget(self.history_btn)
+        history_hint = QLabel("What AudioCleaner has done, across every folder and run.")
+        history_hint.setWordWrap(True)
+        history_hint.setStyleSheet("color: #666;")
+        safety_layout.addWidget(history_hint)
+
+        safety_layout.addStretch()
+        safety_box.setLayout(safety_layout)
+        parent_row.addWidget(safety_box, stretch=1)
+
+    def _build_audio_subtitle_options(self, parent_row: QHBoxLayout):
+        # Audio & subtitle options
+        options_box = QGroupBox("Audio && Subtitle Options")
+        options_layout = QVBoxLayout()
+
+        self.keep_commentary_check = QCheckBox("Keep commentary tracks")
+        self.keep_commentary_check.setToolTip(
+            "Default: removed like any other extra audio track."
+        )
+        self.keep_commentary_check.setChecked(DEFAULT_KEEP_COMMENTARY)
+        self.keep_commentary_check.toggled.connect(self._save_audio_subtitle_options)
+        options_layout.addWidget(self.keep_commentary_check)
+        commentary_hint = QLabel("Default: removed like any other extra audio track.")
+        commentary_hint.setWordWrap(True)
+        commentary_hint.setStyleSheet("color: #666;")
+        options_layout.addWidget(commentary_hint)
+
+        self.subtitle_filter_check = QCheckBox("Also clean subtitle tracks")
+        self.subtitle_filter_check.setToolTip(
+            "Keep only checked languages below, plus any Forced tracks."
+        )
+        self.subtitle_filter_check.setChecked(DEFAULT_SUBTITLE_FILTER_ENABLED)
+        self.subtitle_filter_check.toggled.connect(self._on_toggle_subtitle_filter)
+        options_layout.addWidget(self.subtitle_filter_check)
+        subtitle_hint = QLabel("Keeps only checked languages below, plus any Forced tracks.")
+        subtitle_hint.setWordWrap(True)
+        subtitle_hint.setStyleSheet("color: #666;")
+        options_layout.addWidget(subtitle_hint)
+
+        self.scan_languages_btn = QPushButton("Scan Folders for Subtitle Languages…")
+        self.scan_languages_btn.clicked.connect(self._on_scan_languages)
+        options_layout.addWidget(self.scan_languages_btn)
+
+        self.lang_scroll = QScrollArea()
+        self.lang_scroll.setWidgetResizable(True)
+        self.lang_scroll.setMaximumHeight(90)
+        self.lang_checklist_widget = QWidget()
+        self.lang_checklist_layout = QVBoxLayout(self.lang_checklist_widget)
+        self.lang_checklist_placeholder = QLabel(
+            "Scan folders above to see which subtitle languages are actually present."
+        )
+        self.lang_checklist_placeholder.setWordWrap(True)
+        self.lang_checklist_placeholder.setStyleSheet("color: #666;")
+        self.lang_checklist_layout.addWidget(self.lang_checklist_placeholder)
+        self.lang_checklist_layout.addStretch()
+        self.lang_scroll.setWidget(self.lang_checklist_widget)
+        options_layout.addWidget(self.lang_scroll)
+
+        options_layout.addStretch()
+        options_box.setLayout(options_layout)
+        parent_row.addWidget(options_box, stretch=1)
 
     def _check_dependencies(self):
         missing = get_missing_tools()
@@ -859,7 +981,9 @@ class MainWindow(QWidget):
         self.language_scan_worker.failed.connect(self._on_languages_scan_failed)
         self.language_scan_worker.start()
 
+    @_safe_slot
     def _on_languages_scanned(self, languages: set):
+        self._retire_worker(self.language_scan_worker)
         while self.lang_checklist_layout.count():
             item = self.lang_checklist_layout.takeAt(0)
             w = item.widget()
@@ -883,7 +1007,9 @@ class MainWindow(QWidget):
         self.scan_languages_btn.setText("Scan Folders for Subtitle Languages…")
         self._log(f"Found {len(languages)} subtitle language(s).")
 
+    @_safe_slot
     def _on_languages_scan_failed(self, message: str):
+        self._retire_worker(self.language_scan_worker)
         self.scan_languages_btn.setEnabled(True)
         self.scan_languages_btn.setText("Scan Folders for Subtitle Languages…")
         self._log(f"Subtitle language scan failed: {message}")
@@ -1128,7 +1254,34 @@ class MainWindow(QWidget):
         self.worker.failed.connect(self._on_failed)
         self.worker.start()
 
+    def _retire_worker(self, worker):
+        """
+        Blocks briefly until `worker`'s underlying OS thread has fully
+        wound down before its Python reference is allowed to be replaced
+        or dropped. This matters because a QThread having emitted its
+        "done" signal and having its run() method return are not the same
+        instant as the OS thread being fully joined at the Qt/native
+        level -- deleting (or letting Python's refcounting garbage-collect)
+        a QThread object while Qt still considers it "running" is a
+        well-known hard crash in PySide/PyQt, not a catchable Python
+        exception, so it bypasses @_safe_slot and the global excepthook
+        entirely and just takes the whole process down with no dialog, no
+        traceback, nothing.
+        This bites hardest on the *fastest*-finishing runs -- e.g. a
+        folder with zero matching files, where run_pipeline returns
+        almost instantly -- because that's exactly when this method's
+        caller is most likely to reuse or drop the worker reference before
+        Qt has had time to settle the thread's state naturally, unlike a
+        real multi-minute clean where that settling has ample time to
+        happen on its own. wait() is a no-op if the thread has already
+        fully stopped, so this costs nothing in the normal case.
+        """
+        if worker is not None:
+            worker.wait(5000)
+
+    @_safe_slot
     def _on_folder_finished(self, summary):
+        self._retire_worker(self.worker)
         for key in self._run_totals:
             self._run_totals[key] += getattr(summary, key)
         self._run_next_folder_in_queue()
@@ -1235,15 +1388,18 @@ class MainWindow(QWidget):
         self.current_folder_label.setText("—")
         self.eta_label.setText("—")
 
+    @_safe_slot
     def _on_watch_file_done(self, result):
         self._watch_processed_count += 1
         self.files_count_label.setText(f"{self._watch_processed_count} processed")
         self.current_file_label.setText(Path(result.path).name)
         self._log(_format_result_line(result), status=result.status)
 
+    @_safe_slot
     def _on_watch_heartbeat(self, message: str):
         self._log(message)
 
+    @_safe_slot
     def _on_watch_failed(self, message: str):
         self._log(f"Watch mode error: {message}")
         if self.isVisible():
@@ -1252,7 +1408,17 @@ class MainWindow(QWidget):
             self.tray_icon.showMessage(APP_NAME, f"Watch error: {message}", QSystemTrayIcon.Warning, 5000)
         # Leave other folders' watchers running; just drop the failed one's
         # reference so Stop Watching doesn't wait on a dead thread forever.
-        self.watch_workers = [w for w in self.watch_workers if w.isRunning()]
+        # wait() first for the same reason _retire_worker() exists -- the
+        # failed signal firing doesn't guarantee the OS thread has fully
+        # wound down yet, and dropping a QThread reference while Qt still
+        # considers it running is a hard, unrecoverable crash.
+        still_running = []
+        for w in self.watch_workers:
+            if w.isRunning():
+                still_running.append(w)
+            else:
+                w.wait(5000)
+        self.watch_workers = still_running
         if not self.watch_workers:
             self._stop_watching()
 
@@ -1280,6 +1446,7 @@ class MainWindow(QWidget):
             subprocess.run(["xdg-open", str(log_path)])
 
     # ---------------------------------------------------------- worker callbacks
+    @_safe_slot
     def _on_progress(self, done: int, total: int, filename: str, phase: str, file_pct: int = -1):
         label = f"[{phase}] {filename}"
         if phase == "processing" and file_pct >= 0:
@@ -1309,15 +1476,19 @@ class MainWindow(QWidget):
             remaining = rate * (total - done)
             self.eta_label.setText(_format_seconds(remaining))
 
+    @_safe_slot
     def _on_file_done(self, result):
         if result.status == "error" and self._current_run_root is not None:
             self._last_error_paths.append((self._current_run_root, Path(result.path)))
         self._log(_format_result_line(result), status=result.status)
 
+    @_safe_slot
     def _on_notice(self, message: str):
         self._log(f"ℹ {message}")
 
+    @_safe_slot
     def _on_failed(self, message: str):
+        self._retire_worker(self.worker)
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.retry_errors_btn.setEnabled(len(self._last_error_paths) > 0)
@@ -1391,6 +1562,7 @@ def main():
     minimized = "--minimized" in sys.argv or "--tray" in sys.argv
 
     app = QApplication(sys.argv)
+    _install_global_excepthook()
     app.setOrganizationName(APP_NAME)
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)  # keep running when hidden to tray
