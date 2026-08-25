@@ -23,13 +23,14 @@ import webbrowser
 import faulthandler
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QSize
 from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QTextCursor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox,
-    QGroupBox, QFormLayout, QSpinBox, QFrame, QListWidget, QCheckBox,
+    QGroupBox, QFormLayout, QSpinBox, QFrame, QListWidget, QListWidgetItem,
+    QCheckBox, QAbstractItemView,
     QSystemTrayIcon, QMenu, QStyle, QScrollArea, QSplitter, QSizePolicy,
     QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QLineEdit,
 )
@@ -45,7 +46,7 @@ from .history import ProcessingHistory, default_history_db_path
 from . import autostart
 from .styles import (
     STYLESHEET, DEP_BANNER_STYLE, MUTED_LABEL_STYLE, SECTION_HEADER_STYLE,
-    OUTER_MARGIN, BLOCK_GAP, FIELD_GAP, PAD_H,
+    OUTER_MARGIN, BLOCK_GAP, FIELD_GAP, PAD_H, TEXT,
 )
 
 # Friendly display names for subtitle-language checkboxes. Falls back to
@@ -308,12 +309,26 @@ class MainWindow(QWidget):
         # ============================================================
         top_pane = QVBoxLayout()
         top_pane.setSpacing(FIELD_GAP)
+        folder_header_row = QHBoxLayout()
         folder_label = QLabel("Folders to clean / watch (any number, don't need to be related):")
         folder_label.setStyleSheet(SECTION_HEADER_STYLE)
-        top_pane.addWidget(folder_label)
+        folder_header_row.addWidget(folder_label)
+        folder_header_row.addStretch()
+        self.folder_count_label = QLabel("No folders added")
+        self.folder_count_label.setStyleSheet(MUTED_LABEL_STYLE)
+        folder_header_row.addWidget(self.folder_count_label)
+        top_pane.addLayout(folder_header_row)
 
         self.folder_list = QListWidget()
-        self.folder_list.setFixedHeight(100)
+        self.folder_list.setObjectName("folderList")
+        # Tall enough to see ~4 folders at a glance without scrolling (the
+        # old fixed 100px only fit ~2 rows, which is exactly why a longer
+        # list was hard to read at a glance); still caps out and scrolls
+        # for libraries with many folders.
+        self.folder_list.setFixedHeight(168)
+        self.folder_list.setAlternatingRowColors(True)
+        self.folder_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.folder_list.setUniformItemSizes(True)
         # Elide long paths in the middle instead of clipping/scrolling.
         self.folder_list.setTextElideMode(Qt.ElideMiddle)
         top_pane.addWidget(self.folder_list)
@@ -647,6 +662,85 @@ class MainWindow(QWidget):
         self.watch_btn.setEnabled(ready)
         self.open_log_btn.setEnabled(len(self.selected_roots) > 0)
 
+    # ---------------------------------------------------------- folder list rendering
+    def _update_folder_count_label(self):
+        n = len(self.selected_roots)
+        if n == 0:
+            self.folder_count_label.setText("No folders added")
+        elif n == 1:
+            self.folder_count_label.setText("1 folder added")
+        else:
+            self.folder_count_label.setText(f"{n} folders added")
+
+    def _add_folder_item(self, path: Path):
+        """Add one folder to the visible list as a proper row: a folder
+        icon, the full path (elided in the middle, full path on hover),
+        and its own remove button -- so it reads as a clear list of
+        distinct entries rather than one hard-to-parse block of text, and
+        a folder can be removed with a single click without having to
+        select it first.
+        """
+        item = QListWidgetItem(self.folder_list)
+        item.setData(Qt.UserRole, str(path))
+        # Deliberately leave item.setText() unset: the custom row widget
+        # below (via setItemWidget) is what actually gets painted, and if
+        # the item also carries its own text, some styles paint that text
+        # underneath/behind the widget too, producing garbled overlapping
+        # text. UserRole above is enough for any code that needs the path
+        # back out of an item.
+
+        row = QWidget()
+        row.setAttribute(Qt.WA_TranslucentBackground)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(PAD_H, 0, PAD_H, 0)
+        row_layout.setSpacing(FIELD_GAP)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(
+            self.style().standardIcon(QStyle.SP_DirIcon).pixmap(18, 18)
+        )
+        row_layout.addWidget(icon_label)
+
+        path_label = QLabel(str(path))
+        path_label.setToolTip(str(path))
+        path_label.setStyleSheet(f"color: {TEXT}; background: transparent;")
+        fm = path_label.fontMetrics()
+        row_layout.addWidget(path_label, 1)
+
+        remove_row_btn = QPushButton("X")
+        remove_row_btn.setObjectName("folderRowRemoveButton")
+        remove_row_btn.setToolTip(f"Remove {path}")
+        remove_row_btn.clicked.connect(lambda: self._remove_folder_item(item))
+        row_layout.addWidget(remove_row_btn)
+
+        # NOT row.sizeHint() here: the app-wide stylesheet (which forces
+        # this button's real height via QSS min/max-height) hasn't been
+        # applied/polished yet at this point, so sizeHint() would report
+        # the row as much shorter than the button actually ends up being
+        # once styled. QListWidget then clips the itemWidget to that
+        # stale, too-small rect -- which literally chopped the top off
+        # this button, leaving only a sliver of the "X" visible. A fixed,
+        # generous row height sidesteps the whole timing issue.
+        item.setSizeHint(QSize(0, 40))
+        self.folder_list.setItemWidget(item, row)
+
+        # Elide the label ourselves on resize -- QLabel doesn't do this
+        # natively the way QListWidget's own item text does.
+        def _reelide():
+            path_label.setText(fm.elidedText(str(path), Qt.ElideMiddle, path_label.width()))
+        path_label.resizeEvent = lambda event: _reelide()
+        _reelide()
+
+    def _remove_folder_item(self, item: QListWidgetItem):
+        row = self.folder_list.row(item)
+        if row < 0:
+            return
+        self.folder_list.takeItem(row)
+        del self.selected_roots[row]
+        self._update_action_buttons_enabled()
+        self._update_folder_count_label()
+        self._save_folders()
+
     # ---------------------------------------------------------- persistence
     def _load_saved_folders(self):
         saved = self.settings.value("folders", [])
@@ -656,7 +750,8 @@ class MainWindow(QWidget):
             path = Path(p)
             if path.exists() and path not in self.selected_roots:
                 self.selected_roots.append(path)
-                self.folder_list.addItem(str(path))
+                self._add_folder_item(path)
+        self._update_folder_count_label()
 
         settle = self.settings.value("settle_seconds", None)
         if settle is not None:
@@ -935,8 +1030,9 @@ class MainWindow(QWidget):
             QMessageBox.information(self, APP_NAME, "That folder is already in the list.")
             return
         self.selected_roots.append(path)
-        self.folder_list.addItem(str(path))
+        self._add_folder_item(path)
         self._update_action_buttons_enabled()
+        self._update_folder_count_label()
         self._save_folders()
 
     def _on_remove_folder(self):
@@ -947,6 +1043,7 @@ class MainWindow(QWidget):
         self.folder_list.takeItem(row)
         del self.selected_roots[row]
         self._update_action_buttons_enabled()
+        self._update_folder_count_label()
         self._save_folders()
 
     # ---------------------------------------------------------- manual run (multi-folder queue)

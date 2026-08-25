@@ -122,7 +122,7 @@ QPlainTextEdit {{
     color: {TEXT_MUTED};
 }}
 
-/* ---------------- Lists (no alternating rows, generous row padding) --- */
+/* ---------------- Lists (zebra-striped, generous row padding) --------- */
 QListWidget {{
     outline: none;
 }}
@@ -130,13 +130,34 @@ QListWidget::item {{
     padding: 10px {FIELD_GAP}px;
     border-bottom: 1px solid {BORDER};
 }}
+QListWidget::item:alternate {{
+    background-color: {CARD_BG_RAISED};
+}}
 QListWidget::item:selected {{
     background-color: {SELECTION_BG};
+    border-left: 3px solid {ACCENT};
     color: {TEXT};
-    border-radius: 4px;
 }}
 QListWidget::item:hover {{
     background-color: {CARD_BG_RAISED};
+}}
+QPushButton#folderRowRemoveButton {{
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: {TEXT_MUTED};
+    font-size: 11pt;
+    font-weight: 700;
+    padding: 0px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+}}
+QPushButton#folderRowRemoveButton:hover {{
+    background-color: {DANGER};
+    border-color: {DANGER};
+    color: {TEXT};
 }}
 
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{
