@@ -31,7 +31,18 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX-compressed, --onefile, windowed (console=False) PyInstaller
+    # builds are one of the most commonly false-positived patterns by
+    # Windows Defender and other AV/EDR products -- and, worse, some of
+    # them don't just quarantine the file on disk, they kill the *running*
+    # process the moment its behaviour looks suspicious (which, for this
+    # app, is exactly what normal operation looks like: rapidly rewriting
+    # a lot of files). That would present as exactly "runs fine through
+    # every file, then the app just closes, no error" -- with nothing for
+    # AudioCleaner's own code to catch, because the OS terminated the
+    # process out from under it. Disabling UPX removes the single biggest
+    # contributor to that risk, at the cost of a somewhat larger exe.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

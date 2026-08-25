@@ -5,10 +5,20 @@ Uses HKEY_CURRENT_USER, not HKEY_LOCAL_MACHINE, so no admin rights are
 needed and the setting only affects the current Windows user account.
 """
 import sys
-import winreg
 from pathlib import Path
 
 from .config import APP_NAME
+
+# winreg only exists on Windows. Importing it unconditionally means this
+# whole module -- and therefore gui.py, which imports it at module load
+# time -- fails to import at all on any other platform (or if this file
+# is ever exercised by a non-Windows dev/test run). Guard it so the rest
+# of the app still works; is_enabled()/set_enabled() below simply report
+# "not available" off-Windows instead of taking the app down.
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 _RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -32,6 +42,8 @@ def _get_launch_command() -> str:
 
 def is_enabled() -> bool:
     """Return True if the app is currently registered to start with Windows."""
+    if winreg is None:
+        return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY_PATH, 0, winreg.KEY_READ) as key:
             winreg.QueryValueEx(key, APP_NAME)
@@ -42,6 +54,8 @@ def is_enabled() -> bool:
 
 def set_enabled(enabled: bool) -> None:
     """Add or remove the startup registry entry. Raises OSError on failure."""
+    if winreg is None:
+        raise OSError("Start with Windows is only available on Windows.")
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _RUN_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
         if enabled:
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _get_launch_command())

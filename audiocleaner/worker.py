@@ -97,8 +97,18 @@ class CleanerWorker(QThread):
         except Exception as e:  # last-resort catch so the GUI never hangs silently
             self.failed.emit(str(e))
         finally:
+            # A failure here (disk full, permissions, a network share that
+            # dropped mid-close, etc.) must never itself become an
+            # unhandled exception escaping run() -- that would abort this
+            # thread with no signal ever reaching the GUI, leaving the
+            # "Start Processing" button disabled forever with no
+            # explanation. Swallow it; the summary/failure signal above
+            # has already been emitted either way.
             if logger is not None:
-                logger.close()
+                try:
+                    logger.close()
+                except Exception:
+                    pass
 
 
 class LanguageScanWorker(QThread):

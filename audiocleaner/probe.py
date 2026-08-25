@@ -291,7 +291,18 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
         if cached is not None:
             return cached
 
-    stat = path.stat()
+    try:
+        stat = path.stat()
+    except OSError as e:
+        # File (or its folder) vanished between being listed and being
+        # probed here -- e.g. Radarr/Sonarr renaming/moving it mid-scan,
+        # or AV quarantine. Every caller of probe_file() already handles
+        # this exact scenario gracefully *if* it's raised as
+        # FileNotFoundError (see scanner.run_pipeline / watcher.py's
+        # explicit "file moved/renamed" handling) -- raise that instead of
+        # a bare OSError so this takes the same friendly path everywhere,
+        # rather than surfacing as a generic "unexpected error".
+        raise FileNotFoundError(str(e)) from e
     result = FileProbeResult(path=str(path), size=stat.st_size, mtime=stat.st_mtime)
 
     mkvmerge_path = find_tool("mkvmerge")
