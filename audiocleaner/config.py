@@ -11,7 +11,7 @@ APP_NAME = "AudioCleaner"
 # changes (codec_rank.py) in a way that could change *decisions* made from
 # an unchanged probe result. Either bump invalidates old cache entries, so a
 # stale cache never silently keeps applying pre-change decisions.
-SCANNER_VERSION = "2"
+SCANNER_VERSION = "3"
 RULES_VERSION = "2"
 
 # --- Maximum Safety Mode ---

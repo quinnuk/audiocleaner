@@ -22,9 +22,11 @@ from .codec_rank import (
 )
 from .config import TEMP_FILE_SUFFIX, BACKUP_FILE_SUFFIX, DEFAULT_REMUX_STALL_TIMEOUT_SECONDS, DEFAULT_REMUX_ABSOLUTE_TIMEOUT_SECONDS
 
-# Tolerance for container-level duration drift between input and output
-# (remuxing can shift the reported duration by a tiny amount even with no
-# content change). Anything beyond this is treated as a real mismatch.
+# Tolerance for duration drift between input and output (probe.py prefers
+# the video track's own tag_duration over the container-level Segment
+# Duration -- see probe.py -- but remuxing can still shift the reported
+# figure by a tiny amount even with no content change). Anything beyond
+# this is treated as a real mismatch.
 _DURATION_TOLERANCE_SECONDS = 2.0
 
 # Suppress console window creation for subprocess calls in a windowed

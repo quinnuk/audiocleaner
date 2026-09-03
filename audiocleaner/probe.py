@@ -9,6 +9,7 @@ of an unchanged library are fast.
 
 import json
 import os
+import re
 import subprocess
 import shutil
 import sys
@@ -102,6 +103,33 @@ def check_tools_available() -> Optional[str]:
             + ". Install them and ensure they are on PATH."
         )
     return None
+
+
+_TAG_DURATION_RE = re.compile(r"^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$")
+
+
+def _parse_tag_duration(value: Optional[str]) -> Optional[float]:
+    """Parse mkvmerge's per-track ``tag_duration`` (e.g. "01:38:14.889000000",
+    HH:MM:SS.fractional) into seconds. Returns None if missing/unparseable.
+
+    This is written by mkvmerge from the track's own packet timestamps at
+    mux time, independent of the container-level Segment Duration element.
+    Some releases (bad/lazy muxes) carry a Segment Duration that doesn't
+    match what every track's own tag_duration agrees on -- in that case the
+    per-track value is the trustworthy one, since it reflects what's
+    actually encoded rather than a header field that's easy to get wrong
+    and never gets validated by players.
+    """
+    if not value:
+        return None
+    m = _TAG_DURATION_RE.match(value.strip())
+    if not m:
+        return None
+    hours, minutes, seconds = m.groups()
+    try:
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -470,6 +498,7 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
         except (ValueError, AttributeError):
             return 0, 0
 
+    video_tag_duration_seconds = None
     for track in mkv_data.get("tracks") or []:
         if not track:
             continue
@@ -489,6 +518,11 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
                 forced=bool(props.get("forced_track", False)),
             )
         )
+        # Only look at the first video track's own tag_duration -- files
+        # with more than one video track are vanishingly rare here and the
+        # main (first) track is what everything else is timed against.
+        if video_tag_duration_seconds is None:
+            video_tag_duration_seconds = _parse_tag_duration(props.get("tag_duration"))
 
     result.attachment_count = len(mkv_data.get("attachments") or [])
     result.chapter_count = sum(
@@ -497,8 +531,22 @@ def probe_file(path: Path, cache: Optional[ProbeCache] = None) -> FileProbeResul
     )
     container = (mkv_data.get("container") or {}).get("properties") or {}
     duration_ns = container.get("duration")
-    if duration_ns:
-        result.duration_seconds = duration_ns / 1_000_000_000
+    container_duration_seconds = duration_ns / 1_000_000_000 if duration_ns else None
+
+    # Prefer the video track's own tag_duration (written by mkvmerge from
+    # actual packet timestamps at mux time) over the container-level
+    # Segment Duration. Some releases carry a Segment Duration that
+    # disagrees with what every track's own tag_duration agrees on -- when
+    # that happens the per-track value is the one that matches what's
+    # actually encoded, and trusting the container figure instead produces
+    # false "duration changed beyond tolerance" verification failures on
+    # files AudioCleaner never actually touched incorrectly. Fall back to
+    # the container value when no usable tag_duration is present (e.g.
+    # very old mkvmerge muxes that never wrote per-track statistics tags).
+    if video_tag_duration_seconds is not None:
+        result.duration_seconds = video_tag_duration_seconds
+    elif container_duration_seconds is not None:
+        result.duration_seconds = container_duration_seconds
 
     if cache is not None:
         cache.put(result)
