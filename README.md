@@ -220,6 +220,15 @@ mkvmerge --version
 mediainfo --version
 ```
 
+### 🐳 Option 3 — Docker (Linux / NAS / headless server)
+
+AudioCleaner's headless CLI is available as a Docker image with MKVToolNix and MediaInfo included. See **[DOCKER.md](DOCKER.md)** for setup, including a ready-made `docker-compose.example.yml` for Watch Mode.
+
+```bash
+docker run --rm --user 1000:1000 -v /path/to/media:/media -v ./config:/config \
+  ghcr.io/quinnuk/audiocleaner:latest scan /media --dry-run
+```
+
 ---
 
 ## 🖥️ How It Works

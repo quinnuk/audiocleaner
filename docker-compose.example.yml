@@ -1,0 +1,10 @@
+services:
+  audiocleaner:
+    image: ghcr.io/quinnuk/audiocleaner:latest
+    container_name: audiocleaner
+    restart: unless-stopped
+    user: "1000:1000"          # match the user that owns your media files (run `id` on the host)
+    volumes:
+      - ./config:/config       # app data (must be writable by the user above)
+      - /path/to/media:/media  # your MKV library (must be read-write)
+    command: ["scan", "/media", "--watch"]

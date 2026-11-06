@@ -1,0 +1,16 @@
+.git
+.github
+tests
+dist
+build
+__pycache__
+*.pyc
+*.exe
+*.dll
+*.DLL
+*.ico
+*.png
+*.jpg
+*.spec
+build.bat
+GUI_REDESIGN.md
