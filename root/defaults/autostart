@@ -1,2 +1,2 @@
 cd /opt/audiocleaner
-exec /opt/audiocleaner-venv/bin/python /opt/audiocleaner/main.py
+/opt/audiocleaner-venv/bin/python /opt/audiocleaner/main.py >> /config/audiocleaner-gui.log 2>&1 &
