@@ -9,6 +9,7 @@ __pycache__
 *.dll
 *.DLL
 *.ico
+!audio_cleaner_icon.ico
 *.png
 *.jpg
 *.spec
