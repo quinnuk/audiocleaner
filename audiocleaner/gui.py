@@ -1001,8 +1001,20 @@ class MainWindow(QWidget):
         QApplication.instance().quit()
 
     def closeEvent(self, event):
-        # Minimise to tray instead of quitting. Real exit is via the tray
-        # menu's "Quit AudioCleaner", so background watching keeps running.
+        if self.web_mode:
+            # In a browser-hosted desktop there may be no usable system tray.
+            # Closing the window therefore exits cleanly; the Openbox menu
+            # provides a launcher to start AudioCleaner again.
+            self._stop_watching()
+            if self.tray_icon:
+                self.tray_icon.hide()
+            if getattr(self, "_single_instance_server", None):
+                self._single_instance_server.close()
+            event.accept()
+            return
+
+        # On a normal desktop, minimise to tray instead of quitting. Real exit
+        # is via the tray menu's "Quit AudioCleaner", keeping Watch Mode alive.
         event.ignore()
         self.hide()
         if self.tray_icon:
