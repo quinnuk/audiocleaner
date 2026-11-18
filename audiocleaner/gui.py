@@ -1011,6 +1011,12 @@ class MainWindow(QWidget):
             if getattr(self, "_single_instance_server", None):
                 self._single_instance_server.close()
             event.accept()
+            # main() disables Qt's automatic quit-on-last-window behavior so
+            # the native desktop can keep running in the system tray. In the
+            # browser container there is no dependable tray, so explicitly
+            # stop the event loop when the user closes the GUI; the Openbox
+            # menu can then launch a clean new process.
+            QApplication.instance().quit()
             return
 
         # On a normal desktop, minimise to tray instead of quitting. Real exit
