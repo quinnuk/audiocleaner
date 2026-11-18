@@ -1,2 +1,3 @@
+umask 002
 cd /opt/audiocleaner
 /opt/audiocleaner-venv/bin/python /opt/audiocleaner/main.py >> /config/audiocleaner-gui.log 2>&1 &
