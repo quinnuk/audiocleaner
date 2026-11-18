@@ -37,7 +37,6 @@ RUN apt-get update \
       libsm6 \
       libxi6 \
       libxrender1 \
-
       libxcb-xinerama0 \
       libxcb-xkb1 \
       libxkbcommon-x11-0 \
