@@ -72,6 +72,18 @@ Use the numeric group ID that has write permission on the media directories for 
 
 The container does not use Docker's `user:` override because the KasmVNC base image needs its own init process to start the desktop and browser services.
 
+## Build the GUI image locally
+
+Before the published GUI image is available, or when testing your own changes, build the image on the server from a checkout of this branch:
+
+```bash
+git clone --branch feature/browser-gui-docker https://github.com/quinnuk/audiocleaner.git
+cd audiocleaner
+docker build -f Dockerfile.gui -t audiocleaner-gui:local .
+```
+
+For a local test, change the Compose image name to `audiocleaner-gui:local`. This local build uses the same browser desktop and persistent volume layout; it does not change the existing CLI image.
+
 ## Updating
 
 When a new GUI image has been published:
