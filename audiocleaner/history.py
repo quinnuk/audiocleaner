@@ -26,7 +26,12 @@ def default_history_db_path() -> Path:
     """Central, per-user location -- independent of any watched folder, so
     history survives folder reorganisation and covers every library from
     one place."""
-    if os.name == "nt":
+    # Allow container deployments to keep settings/history on a mounted
+    # persistent volume while preserving native per-user locations elsewhere.
+    data_home = os.environ.get("XDG_DATA_HOME")
+    if data_home:
+        base = Path(data_home)
+    elif os.name == "nt":
         base = Path(os.environ.get("APPDATA", Path.home()))
     else:
         base = Path.home() / ".local" / "share"
