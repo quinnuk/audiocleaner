@@ -1,0 +1,54 @@
+FROM ghcr.io/linuxserver/baseimage-kasmvnc:ubuntunoble
+
+LABEL org.opencontainers.image.source="https://github.com/quinnuk/audiocleaner" \
+      org.opencontainers.image.description="AudioCleaner desktop GUI streamed to a browser with KasmVNC" \
+      org.opencontainers.image.licenses="BSD-2-Clause"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HOME=/config \
+    XDG_CONFIG_HOME=/config/.config \
+    XDG_DATA_HOME=/config/.local/share \
+    XDG_CACHE_HOME=/config/.cache \
+    AUDIOCLEANER_WEB_MODE=1 \
+    AUDIOCLEANER_PREVIEW_DEFAULT=1 \
+    QT_X11_NO_MITSHM=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      fonts-dejavu-core \
+      libegl1 \
+      libgl1 \
+      libx11-xcb1 \
+      libxcb-cursor0 \
+      libxcb-icccm4 \
+      libxcb-image0 \
+      libxcb-keysyms1 \
+      libxcb-randr0 \
+      libxcb-render-util0 \
+      libxcb-xinerama0 \
+      libxcb-xkb1 \
+      libxkbcommon-x11-0 \
+      mediainfo \
+      mkvtoolnix \
+      mousepad \
+      python3 \
+      python3-venv \
+      thunar \
+      xdg-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/audiocleaner
+COPY . /opt/audiocleaner/
+
+RUN python3 -m venv /opt/audiocleaner-venv \
+ && /opt/audiocleaner-venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/audiocleaner-venv/bin/pip install --no-cache-dir -r requirements.txt \
+ && mkdir -p /config/.config /config/.local/share /config/.cache /media
+
+# LinuxServer's KasmVNC base reads these defaults on first start. The app
+# opens automatically; the Openbox menu provides a way to relaunch it.
+COPY root / 
+
+EXPOSE 3000 3001
+VOLUME ["/config"]
