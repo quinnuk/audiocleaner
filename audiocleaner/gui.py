@@ -229,12 +229,12 @@ def _wrap_label(text: str, style: str = "") -> QLabel:
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
+        self.web_mode = os.getenv("AUDIOCLEANER_WEB_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
         self.setWindowTitle(APP_NAME)
-        self.resize(1180, 950)
-        # Below this, Pane 3's stat cards would be squeezed into overlap
-        # rather than the status log simply shrinking — so this is a real
-        # floor, not an arbitrary one.
-        self.setMinimumSize(900, 820)
+        self.resize(1120, 720)
+        # Keep the redesigned interface usable in a browser-streamed desktop.
+        # The settings pane is scrollable, so a shorter viewport is acceptable.
+        self.setMinimumSize(900, 640)
 
         icon_path = _icon_path()
         if icon_path:
@@ -343,6 +343,9 @@ class MainWindow(QWidget):
         folder_btn_row.addWidget(self.remove_btn)
         folder_btn_row.addStretch()
         self.preview_check = QCheckBox("Preview Only")
+        self.preview_check.setToolTip(
+            "Manual scans only. Watch Mode always processes new files for real."
+        )
         self.preview_check.toggled.connect(self._save_preview_setting)
         folder_btn_row.addWidget(self.preview_check)
         top_pane.addLayout(folder_btn_row)
@@ -353,6 +356,9 @@ class MainWindow(QWidget):
         self.watch_btn = QPushButton("Start Watching All Folders")
         self.watch_btn.setObjectName("watchButton")
         self.watch_btn.setCheckable(True)
+        self.watch_btn.setToolTip(
+            "Automatically process new MKVs after the settle time. Watch Mode always modifies files."
+        )
         self.watch_btn.clicked.connect(self._on_toggle_watch)
         self.watch_btn.setEnabled(False)
         watch_row.addWidget(self.watch_btn)
@@ -370,6 +376,8 @@ class MainWindow(QWidget):
         self.autostart_check = QCheckBox("Start with Windows (minimised, auto-watch)")
         self.autostart_check.setChecked(autostart.is_enabled())
         self.autostart_check.toggled.connect(self._on_toggle_autostart)
+        if platform.system() != "Windows":
+            self.autostart_check.hide()
         watch_row.addWidget(self.autostart_check)
         watch_row.addStretch()
         top_pane.addLayout(watch_row)
@@ -774,7 +782,8 @@ class MainWindow(QWidget):
             saved_langs = [saved_langs]
         self._saved_subtitle_languages = {str(l).lower() for l in saved_langs}
 
-        preview = self.settings.value("preview_only", False, type=bool)
+        preview_default = os.getenv("AUDIOCLEANER_PREVIEW_DEFAULT", "0").strip().lower() in {"1", "true", "yes", "on"}
+        preview = self.settings.value("preview_only", preview_default, type=bool)
         self.preview_check.blockSignals(True)
         self.preview_check.setChecked(preview)
         self.preview_check.blockSignals(False)
@@ -1189,6 +1198,23 @@ class MainWindow(QWidget):
         if not self.selected_roots:
             self.watch_btn.setChecked(False)
             return
+
+        # In the browser/Docker deployment, start in Preview Only mode so
+        # the first manual scan cannot alter the library accidentally. Watch
+        # Mode is intentionally live, so make that distinction explicit
+        # before the user enables continuous processing.
+        if self.web_mode and self.preview_check.isChecked():
+            answer = QMessageBox.question(
+                self,
+                APP_NAME,
+                "Watch Mode always modifies new MKV files. Preview Only applies "
+                "to manual scans, not Watch Mode.\n\nStart Watch Mode anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                self.watch_btn.setChecked(False)
+                return
 
         tool_error = check_tools_available()
         if tool_error:
