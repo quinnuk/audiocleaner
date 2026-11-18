@@ -68,7 +68,7 @@ On the server, inspect the media directory:
 stat -c 'owner=%u group=%g mode=%a path=%n' /data/media
 ```
 
-Use the numeric group ID that has write permission on the media directories for `MEDIA_GID`. The directory and existing MKV files must grant that group write access. If they do not, adjust the host's media-group permissions deliberately before enabling live processing. Do not recursively change ownership of the whole media library just to make the container start.
+Use the numeric group ID that has write permission on the media directories for `MEDIA_GID`. Every directory AudioCleaner will process must grant that group read, execute, and write access (so it can read the folder and create/rename the temporary MKV beside the original). Existing MKV files need to be readable; AudioCleaner does not edit them in place. The container uses `umask 002` for new output files so they are group-writable. Set the setgid bit on the relevant media directories (`g+s`) if you want new files to inherit the directory's media group. Check your current ownership, modes, and ACLs first, and test on a small sample folder before allowing live processing. Do not recursively change ownership or permissions across the whole media library just to make the container start.
 
 The container does not use Docker's `user:` override because the KasmVNC base image needs its own init process to start the desktop and browser services.
 
