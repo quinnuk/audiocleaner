@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="AudioCleaner">
+    <item label="Open AudioCleaner">
+      <action name="Execute">
+        <command>/opt/audiocleaner-venv/bin/python /opt/audiocleaner/main.py</command>
+      </action>
+    </item>
+    <separator />
+    <item label="Open Media Folder">
+      <action name="Execute">
+        <command>thunar /media</command>
+      </action>
+    </item>
+    <item label="Open Config Folder">
+      <action name="Execute">
+        <command>thunar /config</command>
+      </action>
+    </item>
+  </menu>
+</openbox_menu>
