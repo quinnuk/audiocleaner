@@ -1,0 +1,22 @@
+services:
+  audiocleaner-gui:
+    image: ghcr.io/quinnuk/audiocleaner-gui:latest
+    container_name: audiocleaner-gui
+    restart: unless-stopped
+    shm_size: "1gb"
+    ports:
+      - "3000:3000"
+      # Optional KasmVNC HTTPS endpoint (self-signed certificate):
+      # - "3001:3001"
+    environment:
+      - TZ=Europe/London
+      - TITLE=AudioCleaner
+      - CUSTOM_USER=${AUDIOCLEANER_USER:-quinn}
+      - PASSWORD=${AUDIOCLEANER_PASSWORD:?Set AUDIOCLEANER_PASSWORD in your .env file}
+      # Supplementary host group used for write access to the media library.
+      # Set MEDIA_GID in .env to the group ID that has write access on the host.
+    group_add:
+      - "${MEDIA_GID:-1000}"
+    volumes:
+      - ./config:/config
+      - /data/media:/media:rw
