@@ -1,0 +1,2 @@
+cd /opt/audiocleaner
+exec /opt/audiocleaner-venv/bin/python /opt/audiocleaner/main.py
