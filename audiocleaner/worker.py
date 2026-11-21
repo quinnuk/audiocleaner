@@ -10,11 +10,11 @@ from PySide6.QtCore import QThread, Signal
 from .scanner import run_pipeline, scan_subtitle_languages, ScanSummary
 from .logger import RunLogger
 from .processor import ProcessResult
-from .probe import ProbeCache
+from .probe import ProbeCache, cache_path_for_root
 from .watcher import WatchState, watch_iteration
 from .history import ProcessingHistory
 from .config import (
-    CACHE_FILENAME, WATCH_POLL_INTERVAL_SECONDS, WATCH_DEFAULT_SETTLE_SECONDS,
+    WATCH_POLL_INTERVAL_SECONDS, WATCH_DEFAULT_SETTLE_SECONDS,
     DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
 )
 
@@ -183,7 +183,7 @@ class WatchWorker(QThread):
         history = None
         try:
             logger = RunLogger(self.root)
-            cache = ProbeCache(self.root / CACHE_FILENAME)
+            cache = ProbeCache(cache_path_for_root(self.root))
             state = WatchState()
             try:
                 history = ProcessingHistory()
