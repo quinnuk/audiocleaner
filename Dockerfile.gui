@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     XDG_CACHE_HOME=/config/.cache \
     AUDIOCLEANER_WEB_MODE=1 \
     AUDIOCLEANER_PREVIEW_DEFAULT=1 \
+    AUDIOCLEANER_LOG_DIR=/config/logs \
     QT_X11_NO_MITSHM=1
 
 RUN apt-get update \
