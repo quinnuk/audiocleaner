@@ -9,6 +9,7 @@ of an unchanged library are fast.
 
 import json
 import os
+import hashlib
 import re
 import subprocess
 import shutil
@@ -19,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from .config import SCANNER_VERSION
+from .config import CACHE_FILENAME, SCANNER_VERSION
 
 # Suppress console window creation for subprocess calls in a windowed
 # (console=False) build -- otherwise Windows pops a new console per call.
@@ -202,6 +203,26 @@ class FileProbeResult:
             scanner_version=d.get("scanner_version", ""),
             error=d.get("error"),
         )
+
+
+def cache_path_for_root(root: Path) -> Path:
+    """Return the cache path for a media root.
+
+    Normal desktop/CLI use keeps the cache beside the media. Docker GUI
+    deployments can set AUDIOCLEANER_CACHE_DIR to persist cache data under
+    /config, allowing media folders to be mounted read-only.
+    """
+    root = Path(root)
+    configured_dir = os.getenv("AUDIOCLEANER_CACHE_DIR", "").strip()
+    if configured_dir:
+        safe_name = "".join(
+            char if char.isalnum() or char in "-_." else "_"
+            for char in (root.name or "root")
+        ).strip("._-") or "folder"
+        root_identity = str(root.resolve())
+        root_hash = hashlib.sha256(root_identity.encode("utf-8")).hexdigest()[:10]
+        return Path(configured_dir).expanduser() / f"{safe_name}-{root_hash}" / CACHE_FILENAME
+    return root / CACHE_FILENAME
 
 
 class ProbeCache:
