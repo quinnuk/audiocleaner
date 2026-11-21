@@ -308,6 +308,38 @@ QProgressBar::chunk {{
     background-color: {ACCENT};
 }}
 
+/* ---------------- Tabbed results workspace ---------------- */
+QTabWidget {{
+    background-color: transparent;
+}}
+QTabWidget::pane {{
+    background-color: {CARD_BG};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    top: -1px;
+}}
+QTabBar::tab {{
+    background-color: {BG};
+    color: {TEXT_MUTED};
+    border: 1px solid {BORDER};
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 8px 14px;
+    margin-right: 4px;
+}}
+QTabBar::tab:selected {{
+    background-color: {CARD_BG};
+    color: {TEXT};
+    border-color: {BORDER_STRONG};
+}}
+QTabBar::tab:hover {{
+    color: {TEXT};
+}}
+QTabBar::tab:disabled {{
+    color: {DISABLED_TEXT};
+}}
+
 /* ---------------- Tables (Processing History) ---------------- */
 QHeaderView::section {{
     background-color: {CARD_BG_RAISED};
