@@ -94,3 +94,42 @@ def test_run_logger_does_not_rotate_small_log(tmp_path):
     content = log_path.read_text()
     assert "tiny" in content  # old content preserved, just appended to
     assert "AudioCleaner run started" in content
+
+
+
+def test_run_logger_uses_configured_log_dir_and_separates_roots(tmp_path, monkeypatch):
+    """Docker logs live under config, with distinct files for same-named roots."""
+    configured = tmp_path / "config" / "logs"
+    monkeypatch.setenv("AUDIOCLEANER_LOG_DIR", str(configured))
+
+    first_root = tmp_path / "media-a" / "movies"
+    second_root = tmp_path / "media-b" / "movies"
+
+    first = RunLogger(first_root)
+    second = RunLogger(second_root)
+    first_path = first.log_path
+    second_path = second.log_path
+    first.close()
+    second.close()
+
+    assert first_path != second_path
+    assert first_path.is_relative_to(configured)
+    assert second_path.is_relative_to(configured)
+    assert first_path.name == "audiocleaner_log.txt"
+    assert second_path.name == "audiocleaner_log.txt"
+    assert first_path.exists()
+    assert second_path.exists()
+    assert not (first_root / "audiocleaner_log.txt").exists()
+    assert not (second_root / "audiocleaner_log.txt").exists()
+
+
+def test_run_logger_keeps_default_log_beside_media_without_override(tmp_path, monkeypatch):
+    """Non-Docker desktop and CLI behaviour remains unchanged."""
+    monkeypatch.delenv("AUDIOCLEANER_LOG_DIR", raising=False)
+
+    rl = RunLogger(tmp_path)
+    log_path = rl.log_path
+    rl.close()
+
+    assert log_path == tmp_path / "audiocleaner_log.txt"
+    assert log_path.exists()
