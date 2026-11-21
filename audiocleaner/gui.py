@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QFrame, QListWidget, QListWidgetItem,
     QCheckBox, QAbstractItemView,
     QSystemTrayIcon, QMenu, QStyle, QScrollArea, QSplitter, QSizePolicy,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QLineEdit,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QLineEdit, QTabWidget,
 )
 
 from .config import (
@@ -580,24 +580,24 @@ class MainWindow(QWidget):
         progress_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         zone2.addWidget(progress_box)
 
-        # Keep the live log inside its own titled card. It receives the
-        # flexible vertical space left after progress, summary and actions.
-        activity_box = QGroupBox("Activity log")
-        activity_layout = QVBoxLayout(activity_box)
+        # Activity and the completed-run summary share one tabbed workspace.
+        # This keeps each view full-size instead of squeezing both into the
+        # same short browser viewport and causing their labels to collide.
+        self.results_tabs = QTabWidget()
+
+        self.activity_page = QWidget()
+        activity_layout = QVBoxLayout(self.activity_page)
         activity_layout.setContentsMargins(PAD_H, FIELD_GAP, PAD_H, PAD_H)
         activity_layout.setSpacing(FIELD_GAP)
         self.status_box = QPlainTextEdit()
         self.status_box.setReadOnly(True)
-        self.status_box.setMinimumHeight(70)
+        self.status_box.setMinimumHeight(90)
         self.status_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         activity_layout.addWidget(self.status_box)
-        zone2.addWidget(activity_box, stretch=1)
+        self.results_tabs.addTab(self.activity_page, "Activity")
 
-        # The completed-run summary is a separate, scrollable card. It starts
-        # hidden, then appears when a run finishes without overlapping the log
-        # or the progress metrics on shorter browser viewports.
-        self.summary_box = QGroupBox("Run summary")
-        summary_layout = QVBoxLayout(self.summary_box)
+        self.summary_page = QWidget()
+        summary_layout = QVBoxLayout(self.summary_page)
         summary_layout.setContentsMargins(PAD_H, FIELD_GAP, PAD_H, PAD_H)
         summary_layout.setSpacing(0)
         self.summary_scroll = QScrollArea()
@@ -605,8 +605,6 @@ class MainWindow(QWidget):
         self.summary_scroll.setFrameShape(QFrame.NoFrame)
         self.summary_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.summary_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.summary_scroll.setMinimumHeight(58)
-        self.summary_scroll.setMaximumHeight(104)
         self.summary_label = QLabel("")
         self.summary_label.setTextFormat(Qt.RichText)
         self.summary_label.setWordWrap(True)
@@ -614,10 +612,9 @@ class MainWindow(QWidget):
         self.summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.summary_scroll.setWidget(self.summary_label)
         summary_layout.addWidget(self.summary_scroll)
-        self.summary_box.setMinimumHeight(88)
-        self.summary_box.setMaximumHeight(138)
-        self.summary_box.setVisible(False)
-        zone2.addWidget(self.summary_box)
+        self.summary_tab_index = self.results_tabs.addTab(self.summary_page, "Preview summary")
+        self.results_tabs.setTabEnabled(self.summary_tab_index, False)
+        zone2.addWidget(self.results_tabs, stretch=1)
 
         # ---- Global action controls (bottom of Pane 3) ------------------
         action_row = QHBoxLayout()
@@ -1115,7 +1112,8 @@ class MainWindow(QWidget):
 
         self.status_box.clear()
         self.summary_label.setText("")
-        self.summary_box.setVisible(False)
+        self.results_tabs.setCurrentWidget(self.activity_page)
+        self.results_tabs.setTabEnabled(self.summary_tab_index, False)
         self.progress_bar.setValue(0)
         self.progress_pct_label.setText("0%")
         self.files_count_label.setText("0 of 0")
@@ -1249,7 +1247,9 @@ class MainWindow(QWidget):
             f"{rows}"
             "</table></body></html>"
         )
-        self.summary_box.setVisible(True)
+        self.results_tabs.setTabEnabled(self.summary_tab_index, True)
+        self.results_tabs.setTabText(self.summary_tab_index, "Preview summary" if is_preview else "Run summary")
+        self.results_tabs.setCurrentWidget(self.summary_page)
 
     # ---------------------------------------------------------- watch mode (one worker per folder)
     def _on_toggle_watch(self, checked: bool):
