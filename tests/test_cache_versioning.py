@@ -4,7 +4,7 @@ Rebuild Cache clear() path (spec §24).
 """
 import json
 
-from audiocleaner.probe import ProbeCache, FileProbeResult, AudioTrackInfo
+from audiocleaner.probe import ProbeCache, FileProbeResult, AudioTrackInfo, cache_path_for_root
 from audiocleaner import config
 
 
@@ -78,3 +78,25 @@ def test_clear_wipes_all_entries_without_touching_files(tmp_path):
     assert cache.get(f) is None
     assert f.exists()  # rebuilding the cache never touches media files
     assert f.read_bytes() == b"x" * 123
+
+
+def test_cache_path_uses_configured_dir_and_separates_roots(tmp_path, monkeypatch):
+    configured = tmp_path / "config" / "cache"
+    monkeypatch.setenv("AUDIOCLEANER_CACHE_DIR", str(configured))
+    first_root = tmp_path / "media-a" / "movies"
+    second_root = tmp_path / "media-b" / "movies"
+
+    first = cache_path_for_root(first_root)
+    second = cache_path_for_root(second_root)
+
+    assert first != second
+    assert first.is_relative_to(configured)
+    assert second.is_relative_to(configured)
+    assert first.name == config.CACHE_FILENAME
+    assert second.name == config.CACHE_FILENAME
+
+
+def test_cache_path_keeps_default_location_without_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUDIOCLEANER_CACHE_DIR", raising=False)
+
+    assert cache_path_for_root(tmp_path) == tmp_path / config.CACHE_FILENAME
