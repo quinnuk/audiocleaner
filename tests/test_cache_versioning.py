@@ -100,3 +100,17 @@ def test_cache_path_keeps_default_location_without_override(tmp_path, monkeypatc
     monkeypatch.delenv("AUDIOCLEANER_CACHE_DIR", raising=False)
 
     assert cache_path_for_root(tmp_path) == tmp_path / config.CACHE_FILENAME
+
+
+def test_cache_save_creates_configured_parent_directory(tmp_path, monkeypatch):
+    configured = tmp_path / "config" / "cache"
+    monkeypatch.setenv("AUDIOCLEANER_CACHE_DIR", str(configured))
+    media_root = tmp_path / "media" / "movies"
+
+    cache_path = cache_path_for_root(media_root)
+    cache = ProbeCache(cache_path)
+    cache.save()
+
+    assert cache_path.parent.is_dir()
+    assert cache_path.is_file()
+    assert cache_path.read_text(encoding="utf-8") == "{}"
