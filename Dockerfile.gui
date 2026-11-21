@@ -13,6 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     AUDIOCLEANER_WEB_MODE=1 \
     AUDIOCLEANER_PREVIEW_DEFAULT=1 \
     AUDIOCLEANER_LOG_DIR=/config/logs \
+    AUDIOCLEANER_CACHE_DIR=/config/cache \
     QT_X11_NO_MITSHM=1
 
 RUN apt-get update \
