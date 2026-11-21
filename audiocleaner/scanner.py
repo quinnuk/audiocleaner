@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .config import (
-    CACHE_FILENAME, MKV_EXTENSIONS, is_own_generated_file,
+    MKV_EXTENSIONS, is_own_generated_file,
     DEFAULT_REMUX_STALL_TIMEOUT_SECONDS,
 )
-from .probe import ProbeCache, probe_file
+from .probe import ProbeCache, probe_file, cache_path_for_root
 from .processor import process_file, ProcessResult, ProcessingCancelled
 from .history import ProcessingHistory
 
@@ -141,7 +141,7 @@ def run_pipeline(
         summary.elapsed_seconds = time.time() - start
         return summary
 
-    cache = ProbeCache(root / CACHE_FILENAME)
+    cache = ProbeCache(cache_path_for_root(root))
 
     owns_history = history is None
     if owns_history:
@@ -273,7 +273,7 @@ def scan_subtitle_languages(
     if not files:
         return set()
 
-    cache = ProbeCache(root / CACHE_FILENAME)
+    cache = ProbeCache(cache_path_for_root(root))
     langs: set = set()
     done = 0
     with ThreadPoolExecutor(max_workers=probe_workers) as pool:
