@@ -325,7 +325,10 @@ class MainWindow(QWidget):
         # old fixed 100px only fit ~2 rows, which is exactly why a longer
         # list was hard to read at a glance); still caps out and scrolls
         # for libraries with many folders.
-        self.folder_list.setFixedHeight(168)
+        # Keep the folder selector compact when only one or two roots are configured.
+        # _update_folder_count_label() grows it to three rows when needed; larger
+        # lists scroll inside this area instead of pushing the results off-screen.
+        self.folder_list.setFixedHeight(88)
         self.folder_list.setAlternatingRowColors(True)
         self.folder_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.folder_list.setUniformItemSizes(True)
@@ -543,7 +546,7 @@ class MainWindow(QWidget):
         self.current_file_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         progress_layout.addWidget(self.current_file_label)
 
-        # Files processed / ETA side by side as compact stat blocks.
+        # Files processed / ETA: compact, aligned metric blocks.
         stats_row = QHBoxLayout()
         stats_row.setSpacing(BLOCK_GAP * 2)
 
@@ -571,29 +574,52 @@ class MainWindow(QWidget):
         progress_layout.addLayout(stats_row)
 
         progress_box.setLayout(progress_layout)
-        # Pin a floor on the card's height so a short window compresses the
-        # status log first, never the stat labels inside this card (which
-        # would otherwise overlap instead of shrinking cleanly).
-        progress_box.setMinimumHeight(285)
+        # A measured minimum protects the progress labels, but avoids the
+        # previous oversized 285px card that squeezed the activity and summary.
+        progress_box.setMinimumHeight(190)
+        progress_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         zone2.addWidget(progress_box)
 
-        # Status / queue window — the part of Pane 3 that expands to
-        # fill remaining vertical space as the window resizes.
-        status_label = QLabel("Status:")
-        status_label.setStyleSheet(SECTION_HEADER_STYLE)
-        zone2.addWidget(status_label)
+        # Keep the live log inside its own titled card. It receives the
+        # flexible vertical space left after progress, summary and actions.
+        activity_box = QGroupBox("Activity log")
+        activity_layout = QVBoxLayout(activity_box)
+        activity_layout.setContentsMargins(PAD_H, FIELD_GAP, PAD_H, PAD_H)
+        activity_layout.setSpacing(FIELD_GAP)
         self.status_box = QPlainTextEdit()
         self.status_box.setReadOnly(True)
-        self.status_box.setMinimumHeight(90)
-        zone2.addWidget(self.status_box, stretch=1)
+        self.status_box.setMinimumHeight(70)
+        self.status_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        activity_layout.addWidget(self.status_box)
+        zone2.addWidget(activity_box, stretch=1)
 
-        # Completion summary
+        # The completed-run summary is a separate, scrollable card. It starts
+        # hidden, then appears when a run finishes without overlapping the log
+        # or the progress metrics on shorter browser viewports.
+        self.summary_box = QGroupBox("Run summary")
+        summary_layout = QVBoxLayout(self.summary_box)
+        summary_layout.setContentsMargins(PAD_H, FIELD_GAP, PAD_H, PAD_H)
+        summary_layout.setSpacing(0)
+        self.summary_scroll = QScrollArea()
+        self.summary_scroll.setWidgetResizable(True)
+        self.summary_scroll.setFrameShape(QFrame.NoFrame)
+        self.summary_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.summary_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.summary_scroll.setMinimumHeight(58)
+        self.summary_scroll.setMaximumHeight(104)
         self.summary_label = QLabel("")
+        self.summary_label.setTextFormat(Qt.RichText)
         self.summary_label.setWordWrap(True)
-        self.summary_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        zone2.addWidget(self.summary_label)
+        self.summary_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.summary_scroll.setWidget(self.summary_label)
+        summary_layout.addWidget(self.summary_scroll)
+        self.summary_box.setMinimumHeight(88)
+        self.summary_box.setMaximumHeight(138)
+        self.summary_box.setVisible(False)
+        zone2.addWidget(self.summary_box)
 
-        # ---- Global action controls (bottom of Pane 3, enhanced weight) --
+        # ---- Global action controls (bottom of Pane 3) ------------------
         action_row = QHBoxLayout()
         action_row.setSpacing(FIELD_GAP)
         action_row.addStretch()
@@ -679,6 +705,10 @@ class MainWindow(QWidget):
             self.folder_count_label.setText("1 folder added")
         else:
             self.folder_count_label.setText(f"{n} folders added")
+        # Each folder row is 40px high. Two rows are enough for the normal
+        # two-library setup; show up to three before enabling the list scroll.
+        visible_rows = min(max(n, 2), 3)
+        self.folder_list.setFixedHeight(visible_rows * 40 + 8)
 
     def _add_folder_item(self, path: Path):
         """Add one folder to the visible list as a proper row: a folder
@@ -1085,6 +1115,7 @@ class MainWindow(QWidget):
 
         self.status_box.clear()
         self.summary_label.setText("")
+        self.summary_box.setVisible(False)
         self.progress_bar.setValue(0)
         self.progress_pct_label.setText("0%")
         self.files_count_label.setText("0 of 0")
@@ -1179,31 +1210,46 @@ class MainWindow(QWidget):
         t = self._run_totals
         is_preview = getattr(self, "_run_was_preview", False)
 
-        header = "<b>Preview Summary</b> (no files were modified)" if is_preview else "<b>Completion Summary</b> (all folders)"
-        cleaned_label = "Files that would be cleaned" if is_preview else "Files cleaned"
-        audio_label = "Audio tracks that would be removed" if is_preview else "Audio tracks removed"
-        subtitle_label = "Subtitle tracks that would be removed" if is_preview else "Subtitle tracks removed"
+        cleaned_label = "Would be cleaned" if is_preview else "Files cleaned"
+        audio_label = "Audio tracks to remove" if is_preview else "Audio tracks removed"
+        subtitle_label = "Subtitle tracks to remove" if is_preview else "Subtitle tracks removed"
 
-        lines = [
-            header,
-            f"Folders processed: {self._run_folder_count}",
-            f"Total files scanned: {t['total_scanned']}",
-            f"{cleaned_label}: {t['cleaned']}",
-            f"Files skipped (already single English track): {t['skipped_single_track']}",
-            f"Files with no English audio: {t['no_english']}",
-            f"Files with unrecognised audio format: {t['unknown_codec']}",
-            f"Errors: {t['errors']}",
-            f"{audio_label}: {t['total_removed_tracks']}",
-            f"{subtitle_label}: {t['total_removed_subtitle_tracks']}",
-            f"Total processing time: {_format_seconds(t['elapsed_seconds'])}",
+        metrics = [
+            ("Folders processed", self._run_folder_count),
+            ("Files scanned", t["total_scanned"]),
+            (cleaned_label, t["cleaned"]),
+            ("Already clean", t["skipped_single_track"]),
+            ("No English audio", t["no_english"]),
+            ("Unrecognised formats", t["unknown_codec"]),
+            ("Errors", t["errors"]),
+            (audio_label, t["total_removed_tracks"]),
+            (subtitle_label, t["total_removed_subtitle_tracks"]),
+            ("Processing time", _format_seconds(t["elapsed_seconds"])),
         ]
         if is_preview:
-            lines.append("Disk space recovered: not calculated in preview mode — run for real to see actual savings")
+            metrics.append(("Disk space recovered", "Not calculated in preview"))
+            heading = "PREVIEW COMPLETE — no files were modified"
         else:
             saved_mb = t["total_bytes_saved"] / 1_048_576
-            lines.append(f"Estimated disk space recovered: {saved_mb:.1f} MB")
+            metrics.append(("Estimated space recovered", f"{saved_mb:.1f} MB"))
+            heading = "PROCESSING COMPLETE"
 
-        self.summary_label.setText("<br>".join(lines))
+        rows = "".join(
+            "<tr>"
+            "<td style='padding:3px 14px 3px 0; color:#AAB4C4;'>{}</td>"
+            "<td style='padding:3px 0; text-align:right; font-weight:700;'>{}</td>"
+            "</tr>".format(label, value)
+            for label, value in metrics
+        )
+        self.summary_label.setText(
+            "<html><body style='margin:0; color:#E5E7EB;'>"
+            "<div style='font-weight:700; margin-bottom:5px;'>"
+            f"{heading}</div>"
+            "<table width='100%' cellspacing='0' cellpadding='0'>"
+            f"{rows}"
+            "</table></body></html>"
+        )
+        self.summary_box.setVisible(True)
 
     # ---------------------------------------------------------- watch mode (one worker per folder)
     def _on_toggle_watch(self, checked: bool):
