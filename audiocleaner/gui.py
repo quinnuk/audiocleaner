@@ -32,17 +32,18 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QFrame, QListWidget, QListWidgetItem,
     QCheckBox, QAbstractItemView,
     QSystemTrayIcon, QMenu, QStyle, QScrollArea, QSplitter, QSizePolicy,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QLineEdit,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QLineEdit, QTabWidget,
 )
 
 from .config import (
-    APP_NAME, LOG_FILENAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
+    APP_NAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
     DEFAULT_KEEP_COMMENTARY, DEFAULT_SUBTITLE_FILTER_ENABLED, DEFAULT_SUBTITLE_LANGUAGES,
-    DEFAULT_MAX_SAFETY_MODE, DEFAULT_PERSISTENT_BACKUP, CACHE_FILENAME,
+    DEFAULT_MAX_SAFETY_MODE, DEFAULT_PERSISTENT_BACKUP,
 )
 from .worker import CleanerWorker, WatchWorker, LanguageScanWorker
-from .probe import check_tools_available, get_missing_tools
+from .probe import check_tools_available, get_missing_tools, cache_path_for_root
 from .history import ProcessingHistory, default_history_db_path
+from .logger import log_path_for_root
 from . import autostart
 from .styles import (
     STYLESHEET, DEP_BANNER_STYLE, MUTED_LABEL_STYLE, SECTION_HEADER_STYLE,
@@ -229,12 +230,13 @@ def _wrap_label(text: str, style: str = "") -> QLabel:
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
+        self.web_mode = os.getenv("AUDIOCLEANER_WEB_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
         self.setWindowTitle(APP_NAME)
-        self.resize(1180, 950)
-        # Below this, Pane 3's stat cards would be squeezed into overlap
-        # rather than the status log simply shrinking — so this is a real
-        # floor, not an arbitrary one.
-        self.setMinimumSize(900, 820)
+        # Use a slightly smaller logical window so the KasmVNC browser
+        # viewport does not need horizontal scrolling on common HiDPI displays.
+        self.resize(1000, 650)
+        # The settings pane scrolls independently, so a compact minimum is safe.
+        self.setMinimumSize(820, 540)
 
         icon_path = _icon_path()
         if icon_path:
@@ -325,7 +327,10 @@ class MainWindow(QWidget):
         # old fixed 100px only fit ~2 rows, which is exactly why a longer
         # list was hard to read at a glance); still caps out and scrolls
         # for libraries with many folders.
-        self.folder_list.setFixedHeight(168)
+        # Keep the folder selector compact when only one or two roots are configured.
+        # _update_folder_count_label() grows it to three rows when needed; larger
+        # lists scroll inside this area instead of pushing the results off-screen.
+        self.folder_list.setFixedHeight(88)
         self.folder_list.setAlternatingRowColors(True)
         self.folder_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.folder_list.setUniformItemSizes(True)
@@ -343,6 +348,9 @@ class MainWindow(QWidget):
         folder_btn_row.addWidget(self.remove_btn)
         folder_btn_row.addStretch()
         self.preview_check = QCheckBox("Preview Only")
+        self.preview_check.setToolTip(
+            "Manual scans only. Watch Mode always processes new files for real."
+        )
         self.preview_check.toggled.connect(self._save_preview_setting)
         folder_btn_row.addWidget(self.preview_check)
         top_pane.addLayout(folder_btn_row)
@@ -353,6 +361,9 @@ class MainWindow(QWidget):
         self.watch_btn = QPushButton("Start Watching All Folders")
         self.watch_btn.setObjectName("watchButton")
         self.watch_btn.setCheckable(True)
+        self.watch_btn.setToolTip(
+            "Automatically process new MKVs after the settle time. Watch Mode always modifies files."
+        )
         self.watch_btn.clicked.connect(self._on_toggle_watch)
         self.watch_btn.setEnabled(False)
         watch_row.addWidget(self.watch_btn)
@@ -370,6 +381,8 @@ class MainWindow(QWidget):
         self.autostart_check = QCheckBox("Start with Windows (minimised, auto-watch)")
         self.autostart_check.setChecked(autostart.is_enabled())
         self.autostart_check.toggled.connect(self._on_toggle_autostart)
+        if platform.system() != "Windows":
+            self.autostart_check.hide()
         watch_row.addWidget(self.autostart_check)
         watch_row.addStretch()
         top_pane.addLayout(watch_row)
@@ -515,27 +528,37 @@ class MainWindow(QWidget):
         self.progress_bar.setTextVisible(False)
         progress_layout.addWidget(self.progress_bar)
 
-        progress_layout.addSpacing(FIELD_GAP)
+        # Keep the live folder and file details side by side. Stacking four
+        # labels vertically made the progress card too tall in the browser
+        # viewport and caused its lower status fields to be clipped.
+        current_row = QHBoxLayout()
+        current_row.setSpacing(BLOCK_GAP)
 
-        # "Now processing" — current folder/file, as label-over-value
-        # stat blocks rather than a cramped inline form.
+        folder_block = QVBoxLayout()
+        folder_block.setSpacing(2)
         folder_stat_label = QLabel("CURRENT FOLDER")
         folder_stat_label.setStyleSheet(MUTED_LABEL_STYLE)
-        progress_layout.addWidget(folder_stat_label)
+        folder_block.addWidget(folder_stat_label)
         self.current_folder_label = QLabel("—")
         self.current_folder_label.setWordWrap(True)
         self.current_folder_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        progress_layout.addWidget(self.current_folder_label)
+        folder_block.addWidget(self.current_folder_label)
+        current_row.addLayout(folder_block, 1)
 
+        file_block = QVBoxLayout()
+        file_block.setSpacing(2)
         file_stat_label = QLabel("CURRENT FILE")
         file_stat_label.setStyleSheet(MUTED_LABEL_STYLE)
-        progress_layout.addWidget(file_stat_label)
+        file_block.addWidget(file_stat_label)
         self.current_file_label = QLabel("—")
         self.current_file_label.setWordWrap(True)
         self.current_file_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        progress_layout.addWidget(self.current_file_label)
+        file_block.addWidget(self.current_file_label)
+        current_row.addLayout(file_block, 2)
 
-        # Files processed / ETA side by side as compact stat blocks.
+        progress_layout.addLayout(current_row)
+
+        # Files processed / ETA: compact, aligned metric blocks.
         stats_row = QHBoxLayout()
         stats_row.setSpacing(BLOCK_GAP * 2)
 
@@ -563,29 +586,49 @@ class MainWindow(QWidget):
         progress_layout.addLayout(stats_row)
 
         progress_box.setLayout(progress_layout)
-        # Pin a floor on the card's height so a short window compresses the
-        # status log first, never the stat labels inside this card (which
-        # would otherwise overlap instead of shrinking cleanly).
-        progress_box.setMinimumHeight(285)
+        # A measured minimum protects the progress labels, but avoids the
+        # previous oversized 285px card that squeezed the activity and summary.
+        progress_box.setMinimumHeight(190)
+        progress_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         zone2.addWidget(progress_box)
 
-        # Status / queue window — the part of Pane 3 that expands to
-        # fill remaining vertical space as the window resizes.
-        status_label = QLabel("Status:")
-        status_label.setStyleSheet(SECTION_HEADER_STYLE)
-        zone2.addWidget(status_label)
+        # Activity and the completed-run summary share one tabbed workspace.
+        # This keeps each view full-size instead of squeezing both into the
+        # same short browser viewport and causing their labels to collide.
+        self.results_tabs = QTabWidget()
+
+        self.activity_page = QWidget()
+        activity_layout = QVBoxLayout(self.activity_page)
+        activity_layout.setContentsMargins(PAD_H, FIELD_GAP, PAD_H, PAD_H)
+        activity_layout.setSpacing(FIELD_GAP)
         self.status_box = QPlainTextEdit()
         self.status_box.setReadOnly(True)
         self.status_box.setMinimumHeight(90)
-        zone2.addWidget(self.status_box, stretch=1)
+        self.status_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        activity_layout.addWidget(self.status_box)
+        self.results_tabs.addTab(self.activity_page, "Activity")
 
-        # Completion summary
+        self.summary_page = QWidget()
+        summary_layout = QVBoxLayout(self.summary_page)
+        summary_layout.setContentsMargins(PAD_H, FIELD_GAP, PAD_H, PAD_H)
+        summary_layout.setSpacing(0)
+        self.summary_scroll = QScrollArea()
+        self.summary_scroll.setWidgetResizable(True)
+        self.summary_scroll.setFrameShape(QFrame.NoFrame)
+        self.summary_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.summary_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.summary_label = QLabel("")
+        self.summary_label.setTextFormat(Qt.RichText)
         self.summary_label.setWordWrap(True)
-        self.summary_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        zone2.addWidget(self.summary_label)
+        self.summary_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.summary_scroll.setWidget(self.summary_label)
+        summary_layout.addWidget(self.summary_scroll)
+        self.summary_tab_index = self.results_tabs.addTab(self.summary_page, "Preview summary")
+        self.results_tabs.setTabEnabled(self.summary_tab_index, False)
+        zone2.addWidget(self.results_tabs, stretch=1)
 
-        # ---- Global action controls (bottom of Pane 3, enhanced weight) --
+        # ---- Global action controls (bottom of Pane 3) ------------------
         action_row = QHBoxLayout()
         action_row.setSpacing(FIELD_GAP)
         action_row.addStretch()
@@ -671,6 +714,10 @@ class MainWindow(QWidget):
             self.folder_count_label.setText("1 folder added")
         else:
             self.folder_count_label.setText(f"{n} folders added")
+        # Each folder row is 40px high. Two rows are enough for the normal
+        # two-library setup; show up to three before enabling the list scroll.
+        visible_rows = min(max(n, 2), 3)
+        self.folder_list.setFixedHeight(visible_rows * 40 + 8)
 
     def _add_folder_item(self, path: Path):
         """Add one folder to the visible list as a proper row: a folder
@@ -774,7 +821,8 @@ class MainWindow(QWidget):
             saved_langs = [saved_langs]
         self._saved_subtitle_languages = {str(l).lower() for l in saved_langs}
 
-        preview = self.settings.value("preview_only", False, type=bool)
+        preview_default = os.getenv("AUDIOCLEANER_PREVIEW_DEFAULT", "0").strip().lower() in {"1", "true", "yes", "on"}
+        preview = self.settings.value("preview_only", preview_default, type=bool)
         self.preview_check.blockSignals(True)
         self.preview_check.setChecked(preview)
         self.preview_check.blockSignals(False)
@@ -828,7 +876,7 @@ class MainWindow(QWidget):
             return
         cleared, errors = 0, []
         for root in self.selected_roots:
-            cache_path = Path(root) / CACHE_FILENAME
+            cache_path = cache_path_for_root(Path(root))
             if not cache_path.exists():
                 continue
             try:
@@ -992,8 +1040,26 @@ class MainWindow(QWidget):
         QApplication.instance().quit()
 
     def closeEvent(self, event):
-        # Minimise to tray instead of quitting. Real exit is via the tray
-        # menu's "Quit AudioCleaner", so background watching keeps running.
+        if self.web_mode:
+            # In a browser-hosted desktop there may be no usable system tray.
+            # Closing the window therefore exits cleanly; the Openbox menu
+            # provides a launcher to start AudioCleaner again.
+            self._stop_watching()
+            if self.tray_icon:
+                self.tray_icon.hide()
+            if getattr(self, "_single_instance_server", None):
+                self._single_instance_server.close()
+            event.accept()
+            # main() disables Qt's automatic quit-on-last-window behavior so
+            # the native desktop can keep running in the system tray. In the
+            # browser container there is no dependable tray, so explicitly
+            # stop the event loop when the user closes the GUI; the Openbox
+            # menu can then launch a clean new process.
+            QApplication.instance().quit()
+            return
+
+        # On a normal desktop, minimise to tray instead of quitting. Real exit
+        # is via the tray menu's "Quit AudioCleaner", keeping Watch Mode alive.
         event.ignore()
         self.hide()
         if self.tray_icon:
@@ -1058,6 +1124,8 @@ class MainWindow(QWidget):
 
         self.status_box.clear()
         self.summary_label.setText("")
+        self.results_tabs.setCurrentWidget(self.activity_page)
+        self.results_tabs.setTabEnabled(self.summary_tab_index, False)
         self.progress_bar.setValue(0)
         self.progress_pct_label.setText("0%")
         self.files_count_label.setText("0 of 0")
@@ -1152,31 +1220,48 @@ class MainWindow(QWidget):
         t = self._run_totals
         is_preview = getattr(self, "_run_was_preview", False)
 
-        header = "<b>Preview Summary</b> (no files were modified)" if is_preview else "<b>Completion Summary</b> (all folders)"
-        cleaned_label = "Files that would be cleaned" if is_preview else "Files cleaned"
-        audio_label = "Audio tracks that would be removed" if is_preview else "Audio tracks removed"
-        subtitle_label = "Subtitle tracks that would be removed" if is_preview else "Subtitle tracks removed"
+        cleaned_label = "Would be cleaned" if is_preview else "Files cleaned"
+        audio_label = "Audio tracks to remove" if is_preview else "Audio tracks removed"
+        subtitle_label = "Subtitle tracks to remove" if is_preview else "Subtitle tracks removed"
 
-        lines = [
-            header,
-            f"Folders processed: {self._run_folder_count}",
-            f"Total files scanned: {t['total_scanned']}",
-            f"{cleaned_label}: {t['cleaned']}",
-            f"Files skipped (already single English track): {t['skipped_single_track']}",
-            f"Files with no English audio: {t['no_english']}",
-            f"Files with unrecognised audio format: {t['unknown_codec']}",
-            f"Errors: {t['errors']}",
-            f"{audio_label}: {t['total_removed_tracks']}",
-            f"{subtitle_label}: {t['total_removed_subtitle_tracks']}",
-            f"Total processing time: {_format_seconds(t['elapsed_seconds'])}",
+        metrics = [
+            ("Folders processed", self._run_folder_count),
+            ("Files scanned", t["total_scanned"]),
+            (cleaned_label, t["cleaned"]),
+            ("Already clean", t["skipped_single_track"]),
+            ("No English audio", t["no_english"]),
+            ("Unrecognised formats", t["unknown_codec"]),
+            ("Errors", t["errors"]),
+            (audio_label, t["total_removed_tracks"]),
+            (subtitle_label, t["total_removed_subtitle_tracks"]),
+            ("Processing time", _format_seconds(t["elapsed_seconds"])),
         ]
         if is_preview:
-            lines.append("Disk space recovered: not calculated in preview mode — run for real to see actual savings")
+            metrics.append(("Disk space recovered", "Not calculated in preview"))
+            heading = "PREVIEW COMPLETE — no files were modified"
         else:
             saved_mb = t["total_bytes_saved"] / 1_048_576
-            lines.append(f"Estimated disk space recovered: {saved_mb:.1f} MB")
+            metrics.append(("Estimated space recovered", f"{saved_mb:.1f} MB"))
+            heading = "PROCESSING COMPLETE"
 
-        self.summary_label.setText("<br>".join(lines))
+        rows = "".join(
+            "<tr>"
+            "<td style='padding:3px 14px 3px 0; color:#AAB4C4;'>{}</td>"
+            "<td style='padding:3px 0; text-align:right; font-weight:700;'>{}</td>"
+            "</tr>".format(label, value)
+            for label, value in metrics
+        )
+        self.summary_label.setText(
+            "<html><body style='margin:0; color:#E5E7EB;'>"
+            "<div style='font-weight:700; margin-bottom:5px;'>"
+            f"{heading}</div>"
+            "<table width='100%' cellspacing='0' cellpadding='0'>"
+            f"{rows}"
+            "</table></body></html>"
+        )
+        self.results_tabs.setTabEnabled(self.summary_tab_index, True)
+        self.results_tabs.setTabText(self.summary_tab_index, "Preview summary" if is_preview else "Run summary")
+        self.results_tabs.setCurrentWidget(self.summary_page)
 
     # ---------------------------------------------------------- watch mode (one worker per folder)
     def _on_toggle_watch(self, checked: bool):
@@ -1189,6 +1274,23 @@ class MainWindow(QWidget):
         if not self.selected_roots:
             self.watch_btn.setChecked(False)
             return
+
+        # In the browser/Docker deployment, start in Preview Only mode so
+        # the first manual scan cannot alter the library accidentally. Watch
+        # Mode is intentionally live, so make that distinction explicit
+        # before the user enables continuous processing.
+        if self.web_mode and self.preview_check.isChecked():
+            answer = QMessageBox.question(
+                self,
+                APP_NAME,
+                "Watch Mode always modifies new MKV files. Preview Only applies "
+                "to manual scans, not Watch Mode.\n\nStart Watch Mode anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                self.watch_btn.setChecked(False)
+                return
 
         tool_error = check_tools_available()
         if tool_error:
@@ -1275,7 +1377,7 @@ class MainWindow(QWidget):
                 )
                 return
         root = self.selected_roots[row]
-        log_path = root / LOG_FILENAME
+        log_path = log_path_for_root(root)
         if not log_path.exists():
             QMessageBox.information(self, APP_NAME, f"No log file yet for:\n{root}")
             return

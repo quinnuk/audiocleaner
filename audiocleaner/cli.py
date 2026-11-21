@@ -22,11 +22,11 @@ from pathlib import Path
 from typing import Optional
 
 from .config import (
-    APP_NAME, CACHE_FILENAME, DEFAULT_PREFERRED_LANGUAGES,
+    APP_NAME, DEFAULT_PREFERRED_LANGUAGES,
     WATCH_POLL_INTERVAL_SECONDS, WATCH_DEFAULT_SETTLE_SECONDS,
 )
 from .logger import RunLogger
-from .probe import ProbeCache
+from .probe import ProbeCache, cache_path_for_root
 from .processor import ProcessResult
 from .scanner import run_pipeline, ScanSummary
 from .watcher import WatchState, watch_iteration
@@ -180,7 +180,7 @@ def _run_watch(args, root: Path, preferred_languages: Optional[set],
               "changes as new files settle); ignoring.", file=sys.stderr)
 
     logger = RunLogger(root)
-    cache = ProbeCache(root / CACHE_FILENAME)
+    cache = ProbeCache(cache_path_for_root(root))
     state = WatchState()
     history = None
     if not args.no_history:

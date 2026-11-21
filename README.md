@@ -222,6 +222,8 @@ mediainfo --version
 
 ### 🐳 Option 3 — Docker (Linux / NAS / headless server)
 
+For the full desktop GUI in a browser (using the same PySide6 interface), see **[DOCKER-GUI.md](DOCKER-GUI.md)**. The browser GUI has a separate Docker image and does not replace the existing headless CLI image.
+
 AudioCleaner's headless CLI is available as a Docker image with MKVToolNix and MediaInfo included. See **[DOCKER.md](DOCKER.md)** for setup, including a ready-made `docker-compose.example.yml` for Watch Mode.
 
 ```bash

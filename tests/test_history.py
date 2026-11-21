@@ -105,3 +105,14 @@ def test_scanner_run_pipeline_records_history(tmp_path, monkeypatch):
     assert len(entries) == 1
     assert entries[0].bytes_saved == 42
     history.close()
+
+
+def test_default_history_db_path_respects_xdg_data_home(tmp_path, monkeypatch):
+    """The browser GUI stores its history below the persistent /config mount."""
+    from audiocleaner.history import default_history_db_path
+
+    data_home = tmp_path / "persistent-data"
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+
+    assert default_history_db_path() == data_home / "AudioCleaner" / "history.db"
+    assert (data_home / "AudioCleaner").is_dir()

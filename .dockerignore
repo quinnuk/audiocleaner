@@ -9,8 +9,12 @@ __pycache__
 *.dll
 *.DLL
 *.ico
+!audio_cleaner_icon.ico
 *.png
 *.jpg
 *.spec
 build.bat
 GUI_REDESIGN.md
+
+# Runtime GUI config is mounted at /config; never include it in image builds.
+/config/

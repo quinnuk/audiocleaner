@@ -3,6 +3,8 @@ Simple, human-readable logging to a text file in the target root folder.
 """
 
 import datetime
+import hashlib
+import os
 from pathlib import Path
 
 from .config import LOG_FILENAME, LOG_MAX_BYTES, LOG_BACKUP_COUNT
@@ -51,9 +53,31 @@ def _rotate_if_needed(log_path: Path, max_bytes: int = LOG_MAX_BYTES,
             pass
 
 
+def log_path_for_root(root: Path) -> Path:
+    """Return the run log path for a media root.
+
+    Normal desktop/CLI use keeps the historical log beside the media. Docker
+    deployments can set AUDIOCLEANER_LOG_DIR to keep logs off read-only media
+    mounts. A stable hash prevents two roots with the same folder name from
+    sharing a log file.
+    """
+    root = Path(root)
+    configured_dir = os.getenv("AUDIOCLEANER_LOG_DIR", "").strip()
+    if configured_dir:
+        safe_name = "".join(
+            char if char.isalnum() or char in "-_." else "_"
+            for char in (root.name or "root")
+        ).strip("._-") or "folder"
+        root_identity = str(root.resolve())
+        root_hash = hashlib.sha256(root_identity.encode("utf-8")).hexdigest()[:10]
+        return Path(configured_dir).expanduser() / f"{safe_name}-{root_hash}" / LOG_FILENAME
+    return root / LOG_FILENAME
+
+
 class RunLogger:
     def __init__(self, root: Path):
-        self.log_path = root / LOG_FILENAME
+        self.log_path = log_path_for_root(root)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
         # Read the module-level constants at call time (not as bound
         # defaults) so tests can monkeypatch logger.LOG_MAX_BYTES /
         # logger.LOG_BACKUP_COUNT and have it take effect here.
