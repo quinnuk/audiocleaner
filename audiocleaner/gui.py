@@ -38,10 +38,10 @@ from PySide6.QtWidgets import (
 from .config import (
     APP_NAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
     DEFAULT_KEEP_COMMENTARY, DEFAULT_SUBTITLE_FILTER_ENABLED, DEFAULT_SUBTITLE_LANGUAGES,
-    DEFAULT_MAX_SAFETY_MODE, DEFAULT_PERSISTENT_BACKUP, CACHE_FILENAME,
+    DEFAULT_MAX_SAFETY_MODE, DEFAULT_PERSISTENT_BACKUP,
 )
 from .worker import CleanerWorker, WatchWorker, LanguageScanWorker
-from .probe import check_tools_available, get_missing_tools
+from .probe import check_tools_available, get_missing_tools, cache_path_for_root
 from .history import ProcessingHistory, default_history_db_path
 from .logger import log_path_for_root
 from . import autostart
@@ -876,7 +876,7 @@ class MainWindow(QWidget):
             return
         cleared, errors = 0, []
         for root in self.selected_roots:
-            cache_path = Path(root) / CACHE_FILENAME
+            cache_path = cache_path_for_root(Path(root))
             if not cache_path.exists():
                 continue
             try:
