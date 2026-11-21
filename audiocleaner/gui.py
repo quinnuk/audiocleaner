@@ -231,10 +231,11 @@ class MainWindow(QWidget):
         super().__init__()
         self.web_mode = os.getenv("AUDIOCLEANER_WEB_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
         self.setWindowTitle(APP_NAME)
-        self.resize(1120, 720)
-        # Keep the redesigned interface usable in a browser-streamed desktop.
-        # The settings pane is scrollable, so a shorter viewport is acceptable.
-        self.setMinimumSize(900, 640)
+        # Use a slightly smaller logical window so the KasmVNC browser
+        # viewport does not need horizontal scrolling on common HiDPI displays.
+        self.resize(1000, 650)
+        # The settings pane scrolls independently, so a compact minimum is safe.
+        self.setMinimumSize(820, 540)
 
         icon_path = _icon_path()
         if icon_path:
@@ -526,25 +527,35 @@ class MainWindow(QWidget):
         self.progress_bar.setTextVisible(False)
         progress_layout.addWidget(self.progress_bar)
 
-        progress_layout.addSpacing(FIELD_GAP)
+        # Keep the live folder and file details side by side. Stacking four
+        # labels vertically made the progress card too tall in the browser
+        # viewport and caused its lower status fields to be clipped.
+        current_row = QHBoxLayout()
+        current_row.setSpacing(BLOCK_GAP)
 
-        # "Now processing" — current folder/file, as label-over-value
-        # stat blocks rather than a cramped inline form.
+        folder_block = QVBoxLayout()
+        folder_block.setSpacing(2)
         folder_stat_label = QLabel("CURRENT FOLDER")
         folder_stat_label.setStyleSheet(MUTED_LABEL_STYLE)
-        progress_layout.addWidget(folder_stat_label)
+        folder_block.addWidget(folder_stat_label)
         self.current_folder_label = QLabel("—")
         self.current_folder_label.setWordWrap(True)
         self.current_folder_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        progress_layout.addWidget(self.current_folder_label)
+        folder_block.addWidget(self.current_folder_label)
+        current_row.addLayout(folder_block, 1)
 
+        file_block = QVBoxLayout()
+        file_block.setSpacing(2)
         file_stat_label = QLabel("CURRENT FILE")
         file_stat_label.setStyleSheet(MUTED_LABEL_STYLE)
-        progress_layout.addWidget(file_stat_label)
+        file_block.addWidget(file_stat_label)
         self.current_file_label = QLabel("—")
         self.current_file_label.setWordWrap(True)
         self.current_file_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        progress_layout.addWidget(self.current_file_label)
+        file_block.addWidget(self.current_file_label)
+        current_row.addLayout(file_block, 2)
+
+        progress_layout.addLayout(current_row)
 
         # Files processed / ETA: compact, aligned metric blocks.
         stats_row = QHBoxLayout()
