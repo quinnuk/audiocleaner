@@ -15,3 +15,6 @@ __pycache__
 *.spec
 build.bat
 GUI_REDESIGN.md
+
+# Runtime GUI config is mounted at /config; never include it in image builds.
+/config/
