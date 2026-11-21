@@ -243,6 +243,7 @@ class ProbeCache:
 
     def save(self):
         try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             self.cache_path.write_text(
                 json.dumps(self._data, indent=2), encoding="utf-8"
             )
