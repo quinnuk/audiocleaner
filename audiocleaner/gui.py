@@ -36,13 +36,14 @@ from PySide6.QtWidgets import (
 )
 
 from .config import (
-    APP_NAME, LOG_FILENAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
+    APP_NAME, CODEC_LABELS, WATCH_DEFAULT_SETTLE_SECONDS,
     DEFAULT_KEEP_COMMENTARY, DEFAULT_SUBTITLE_FILTER_ENABLED, DEFAULT_SUBTITLE_LANGUAGES,
     DEFAULT_MAX_SAFETY_MODE, DEFAULT_PERSISTENT_BACKUP, CACHE_FILENAME,
 )
 from .worker import CleanerWorker, WatchWorker, LanguageScanWorker
 from .probe import check_tools_available, get_missing_tools
 from .history import ProcessingHistory, default_history_db_path
+from .logger import log_path_for_root
 from . import autostart
 from .styles import (
     STYLESHEET, DEP_BANNER_STYLE, MUTED_LABEL_STYLE, SECTION_HEADER_STYLE,
@@ -1376,7 +1377,7 @@ class MainWindow(QWidget):
                 )
                 return
         root = self.selected_roots[row]
-        log_path = root / LOG_FILENAME
+        log_path = log_path_for_root(root)
         if not log_path.exists():
             QMessageBox.information(self, APP_NAME, f"No log file yet for:\n{root}")
             return
